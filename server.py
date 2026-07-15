@@ -27,8 +27,14 @@ def normalize_audio(samples):
 
 
 async def audio_handler(websocket):
-    global audio_buffer
-    print("-> Bot connected to transcription server")
+    path = websocket.path
+    user_id = None
+    if path and '?' in path:
+        query = path.split('?', 1)[1]
+        params = dict(pair.split('=', 1) for pair in query.split('&') if '=' in pair)
+        user_id = params.get('userId')
+    audio_buffer = []
+    print(f"-> Bot connected to transcription server for user {user_id}")
     async for message in websocket:
         if isinstance(message, (bytes, bytearray)):
             audio_chunk = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
@@ -40,8 +46,8 @@ async def audio_handler(websocket):
                 segments, _ = model.transcribe(full_audio, beam_size=1)
                 transcript_text = ' '.join(segment.text.strip() for segment in segments if segment.text and segment.text.strip())
                 if transcript_text:
-                    print(f"-> Transcription: {transcript_text}")
-                    await websocket.send(json.dumps({"text": transcript_text}))
+                    print(f"-> Transcription ({user_id}): {transcript_text}")
+                    await websocket.send(json.dumps({"userId": user_id, "text": transcript_text}))
                 audio_buffer = []
 
 

@@ -14,68 +14,74 @@
     input { width: 100%; }
     button { cursor: pointer; background: #2563eb; color: white; border: none; padding: 8px 12px; }
     .row { display:flex; gap:8px; }
+    .tabs { display:flex; gap:8px; margin-bottom:16px; }
+    .tab-button { background:#1f2937; border:1px solid #374151; color:#f9fafb; padding:10px 14px; border-radius:8px; cursor:pointer; }
+    .tab-button.active { background:#2563eb; border-color:#2563eb; }
+    .tab-panel.hidden { display:none; }
     code { color: #fbbf24; }
-    pre { background:#09101a; padding:8px; border-radius:6px; color:#d1d5db; overflow:auto }
+    pre { background:#09101a; padding:8px; border-radius:6px; color:#d1d5db; overflow:auto; white-space: pre-wrap; }
   </style>
 </head>
 <body>
   <h1>DaDAA Relationship Dashboard</h1>
-  <p>Create and manage relationships between world records from the browser.</p>
-
-  <div class="panel">
-    <h2>Create Relationship</h2>
-    <div class="row">
-      <input id="sourceSearch" placeholder="Search source record" />
-      <input id="targetSearch" placeholder="Search target record" />
-    </div>
-    <div style="margin-top:8px;">
-      <select id="relationType">
-        <option value="related">related</option>
-        <option value="owns">owns</option>
-        <option value="mentions">mentions</option>
-        <option value="belongs_to">belongs_to</option>
-      </select>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <button id="saveRelationBtn">Save relationship</button>
-      <button id="refreshBtn">Refresh World</button>
-    </div>
-
-    <div id="searchResults" style="margin-top:12px"></div>
-    <div id="recordDetails" style="margin-top:12px; display:none;"></div>
+  <div class="tabs">
+    <button class="tab-button active" data-tab="relationships">Relationships</button>
+    <button class="tab-button" data-tab="session_notes">Session Notes</button>
+    <button class="tab-button" data-tab="ai_memory">AI / Transcript</button>
   </div>
 
-  <div style="height:16px"></div>
-
-  <div class="panel">
-    <h2>Browse By Category</h2>
-    <div style="display:flex;gap:8px;align-items:center">
-      <select id="browseCategorySelect" style="flex:1">
-        <option value="">-- select category --</option>
-      </select>
-      <button id="browseLoadBtn">Load</button>
-    </div>
-    <div id="browseResults" style="margin-top:12px"></div>
-  </div>
-
-  <div id="linkPanel" class="panel" style="display:none;margin-top:12px">
-    <h3>Linking: <span id="linkSourceLabel"></span></h3>
-    <div style="display:flex;gap:8px;align-items:center">
-      <select id="linkTargetCategory" style="flex:1"></select>
-      <input id="linkTargetSearch" placeholder="Search target within category" />
-      <button id="linkSearchBtn">Search</button>
-    </div>
-    <div id="linkSearchResults" style="margin-top:12px"></div>
-    <div style="margin-top:8px"><button id="linkCancelBtn">Cancel</button></div>
-  </div>
-
-  <div style="height:16px"></div>
-
-  <div class="grid">
+  <div id="tab-relationships" class="tab-panel">
     <div class="panel">
+      <h2>Create Relationship</h2>
+      <div class="row">
+        <input id="sourceSearch" placeholder="Search source record" />
+        <input id="targetSearch" placeholder="Search target record" />
+      </div>
+      <div style="margin-top:8px;">
+        <select id="relationType">
+          <option value="related">related</option>
+          <option value="owns">owns</option>
+          <option value="mentions">mentions</option>
+          <option value="belongs_to">belongs_to</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="saveRelationBtn">Save relationship</button>
+        <button id="refreshBtn">Refresh World</button>
+      </div>
+      <div id="searchResults" style="margin-top:12px"></div>
+      <div id="recordDetails" style="margin-top:12px; display:none;"></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Browse By Category</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="browseCategorySelect" style="flex:1">
+          <option value="">-- select category --</option>
+        </select>
+        <button id="browseLoadBtn">Load</button>
+      </div>
+      <div id="browseResults" style="margin-top:12px"></div>
+    </div>
+
+    <div id="linkPanel" class="panel" style="display:none;margin-top:12px">
+      <h3>Linking: <span id="linkSourceLabel"></span></h3>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="linkTargetCategory" style="flex:1"></select>
+        <input id="linkTargetSearch" placeholder="Search target within category" />
+        <button id="linkSearchBtn">Search</button>
+      </div>
+      <div id="linkSearchResults" style="margin-top:12px"></div>
+      <div style="margin-top:8px"><button id="linkCancelBtn">Cancel</button></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
       <h2>Relationships</h2>
       <div id="relationships"></div>
     </div>
+  </div>
+
+  <div id="tab-session_notes" class="tab-panel hidden">
     <div class="panel">
       <h2>Session Notes</h2>
       <input id="noteTrigger" placeholder="Trigger keyword (e.g. 'ambush')" />
@@ -83,20 +89,27 @@
       <div style="margin-top:8px"><button id="saveNoteBtn">Save note</button></div>
       <div id="notesList" style="margin-top:12px"></div>
     </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Triggered Reminders</h2>
+      <div id="triggeredReminders"></div>
+    </div>
   </div>
 
-  <div class="grid" style="margin-top:12px">
+  <div id="tab-ai_memory" class="tab-panel hidden">
     <div class="panel">
       <h2>Recent AI Memory</h2>
       <div id="memory"></div>
     </div>
-    <div class="panel">
-      <h2>Help & Status</h2>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Transcript History</h2>
+      <div id="transcriptLog"></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Status</h2>
       <div id="status">Ready</div>
-      <div style="margin-top:12px">
-        <h3 style="margin-bottom:8px">Triggered Reminders</h3>
-        <div id="triggeredReminders"></div>
-      </div>
     </div>
   </div>
 
@@ -147,7 +160,7 @@
         const img = rec.img ? `<img src="${rec.img}" style="max-width:100px;max-height:100px;margin-right:8px;border-radius:6px">` : '';
         const sysSummary = rec.system ? Object.keys(rec.system).slice(0,6).join(', ') : '';
         details.innerHTML = `<div style="display:flex;gap:12px;align-items:flex-start"><div>${img}</div><div><strong>${label}</strong><div style="font-size:12px;color:#9ca3af">${rec.type || ''} ${rec.category || ''}</div><div style="margin-top:8px;font-size:13px;color:#d1d5db">${sysSummary}</div></div></div>` +
-+          `<div style="margin-top:8px"><button onclick="useAs('${id}','${label}','source')">Use as source</button> <button onclick="useAs('${id}','${label}','target')">Use as target</button> <button onclick="showRaw('${encodeURIComponent(JSON.stringify(rec))}')">Raw</button></div>`;
+          `<div style="margin-top:8px"><button onclick="useAs('${id}','${label}','source')">Use as source</button> <button onclick="useAs('${id}','${label}','target')">Use as target</button> <button onclick="showRaw('${encodeURIComponent(JSON.stringify(rec))}')">Raw</button></div>`;
       } catch (e) {
         details.style.display = 'block';
         details.innerText = 'Error loading record details';
@@ -178,9 +191,20 @@
       const notes = await fetch('/api/session_notes').then((r) => r.json()).catch(() => []);
       const triggered = await fetch('/api/session_reminders').then((r) => r.json()).catch(() => []);
       document.getElementById('relationships').innerHTML = rels.length ? rels.slice(-20).reverse().map((item) => `<div class="item"><strong>${item.type}</strong><br/>${item.source} → ${item.target} <button onclick="deleteRelation('${item.id}')">Delete</button></div>`).join('') : '<div class="item">No relationships yet.</div>';
-      document.getElementById('memory').innerHTML = memory.summaries && memory.summaries.length ? memory.summaries.slice(-8).reverse().map((entry) => `<div class="item"><code>${entry.timestamp}</code><br/>${entry.summary.headline}</div>`).join('') : '<div class="item">No saved summaries yet.</div>';
+      document.getElementById('memory').innerHTML = memory.summaries && memory.summaries.length ? memory.summaries.slice(-8).reverse().map((entry) => `<div class="item"><code>${entry.timestamp}</code><br/><strong>${entry.summary.headline}</strong><div style="margin-top:6px;color:#d1d5db">${entry.summary.transcript || entry.summary.headline}</div><div style="margin-top:6px;color:#c7d2fe">${entry.summary.advice || ''}</div><div style="margin-top:6px;font-size:12px;color:#9ca3af">${entry.summary.relevantRecords && entry.summary.relevantRecords.length ? 'Relevant: ' + entry.summary.relevantRecords.map(r => `${r.category}: ${r.name}`).join(', ') : ''}</div></div>`).join('') : '<div class="item">No saved summaries yet.</div>';
       document.getElementById('notesList').innerHTML = notes.length ? notes.map(n => `<div class="item"><strong>${n.trigger}</strong>: ${n.note} <button onclick="deleteNote('${n.id}')">Delete</button></div>`).join('') : '<div class="item">No notes yet.</div>';
       document.getElementById('triggeredReminders').innerHTML = triggered.length ? triggered.map(n => `<div class="item"><strong>${n.trigger}</strong><br/>${n.note}</div>`).join('') : '<div class="item">No triggered reminders yet.</div>';
+      const transcriptLogText = await fetch('/api/transcript_log').then((r) => r.text()).catch(() => 'Unable to load transcript log.');
+      document.getElementById('transcriptLog').innerText = transcriptLogText || 'No transcript yet.';
+    }
+
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab-button').forEach((button) => {
+        button.classList.toggle('active', button.dataset.tab === tabName);
+      });
+      document.querySelectorAll('.tab-panel').forEach((panel) => {
+        panel.classList.toggle('hidden', panel.id !== `tab-${tabName}`);
+      });
     }
 
     async function deleteRelation(id) {
@@ -214,11 +238,52 @@
       loadData();
     }
 
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    const speakerColors = ['#2563eb', '#10b981', '#f59e0b', '#f97316', '#8b5cf6', '#ec4899', '#14b8a6'];
+    const speakerColorMap = {};
+
+    function getSpeakerColor(source) {
+      if (!speakerColorMap[source]) {
+        const idx = Object.keys(speakerColorMap).length % speakerColors.length;
+        speakerColorMap[source] = speakerColors[idx];
+      }
+      return speakerColorMap[source];
+    }
+
+    function renderTranscriptLog(text) {
+      const lines = String(text).split('\n').filter(Boolean);
+      if (lines.length === 0) {
+        document.getElementById('transcriptLog').innerHTML = '<div class="item">No transcript yet.</div>';
+        return;
+      }
+
+      document.getElementById('transcriptLog').innerHTML = lines.map((line) => {
+        const match = line.match(/^\[(.+?)\] \[(.+?)\] (.*)$/);
+        if (!match) {
+          return `<div class="item">${escapeHtml(line)}</div>`;
+        }
+        const [, timestamp, source, transcriptText] = match;
+        const color = getSpeakerColor(source);
+        return `<div class="item" style="border-left:4px solid ${color}; padding-left:12px;"><div><strong>${escapeHtml(source)}</strong> <span style="color:#9ca3af; font-size:12px; margin-left:8px">${escapeHtml(timestamp)}</span></div><div style="margin-top:6px; color:#d1d5db">${escapeHtml(transcriptText)}</div></div>`;
+      }).join('');
+    }
+
     document.getElementById('sourceSearch').addEventListener('input', (e) => searchRecords(e.target.value, 'source'));
     document.getElementById('targetSearch').addEventListener('input', (e) => searchRecords(e.target.value, 'target'));
     document.getElementById('saveRelationBtn').addEventListener('click', createRelation);
     document.getElementById('refreshBtn').addEventListener('click', refreshWorld);
     document.getElementById('saveNoteBtn').addEventListener('click', saveNote);
+    document.querySelectorAll('.tab-button').forEach((button) => {
+      button.addEventListener('click', () => switchTab(button.dataset.tab));
+    });
     document.getElementById('browseLoadBtn').addEventListener('click', () => {
       const cat = document.getElementById('browseCategorySelect').value;
       browseCategory(cat);

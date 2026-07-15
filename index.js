@@ -68,8 +68,8 @@ client.on('messageCreate', async (message) => {
     if (message.content === '!join') {
         const voiceChannel = message.member?.voice?.channel;
         if (voiceChannel) {
-            joinAndListen(client, message.guild.id, voiceChannel.id, async (transcript) => {
-                appendTranscript(transcript);
+            joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript) => {
+                appendTranscript(transcript, userId);
                 if (worldContext) {
                     const sessionNotes = loadSessionNotes();
                     const triggered = findTriggeredNotes(sessionNotes, transcript);

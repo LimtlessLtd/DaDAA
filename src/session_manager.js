@@ -24,6 +24,13 @@ function saveSessionNotes(notes) {
     fs.writeFileSync(notesPath, JSON.stringify(notes, null, 2));
 }
 
+function normalizeTriggerText(value = '') {
+    return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+}
+
 function addSessionNote(notes, { trigger, note, remindType = 'instant' }) {
     const entry = {
         id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
@@ -44,8 +51,14 @@ function deleteSessionNote(notes, id) {
 }
 
 function findTriggeredNotes(notes, text) {
-    const t = String(text || '').toLowerCase();
-    return notes.filter((n) => n.trigger && t.includes(n.trigger.toLowerCase()));
+    const transcriptText = normalizeTriggerText(text);
+    return notes.filter((n) => {
+        const triggerText = normalizeTriggerText(n.trigger);
+        return triggerText && (
+            transcriptText.includes(triggerText) ||
+            triggerText.split(/\s+/).every((word) => transcriptText.includes(word))
+        );
+    });
 }
 
 module.exports = { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote, findTriggeredNotes };

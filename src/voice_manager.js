@@ -3,25 +3,32 @@ const { joinVoiceChannel, EndBehaviorType } = require('@discordjs/voice');
 const prism = require('prism-media');
 const WebSocket = require('ws');
 
-let ws = null;
+const socketsByUser = new Map();
 let transcriptHandler = null;
 
-function ensureSocket() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        return ws;
+function ensureSocket(userId) {
+    if (!userId) return null;
+    const existing = socketsByUser.get(userId);
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+        return existing;
     }
 
-    ws = new WebSocket('ws://localhost:8765');
-    ws.on('open', () => console.log('-> Connected to AI Transcription Server'));
-    ws.on('error', (err) => console.error('-> WebSocket Error:', err));
-    ws.on('message', (message) => {
-        const payload = JSON.parse(message.toString());
-        if (transcriptHandler && payload.text) {
-            transcriptHandler(payload.text);
+    const socket = new WebSocket(`ws://localhost:8765?userId=${encodeURIComponent(userId)}`);
+    socket.on('open', () => console.log(`-> Connected to AI Transcription Server for user ${userId}`));
+    socket.on('error', (err) => console.error('-> WebSocket Error:', err));
+    socket.on('message', (message) => {
+        try {
+            const payload = JSON.parse(message.toString());
+            if (transcriptHandler && payload.text) {
+                transcriptHandler(payload.userId || userId, payload.text);
+            }
+        } catch (error) {
+            console.error('-> Failed to parse transcription payload:', error.message);
         }
     });
 
-    return ws;
+    socketsByUser.set(userId, socket);
+    return socket;
 }
 
 function joinAndListen(client, guildId, channelId, handler) {
@@ -33,9 +40,8 @@ function joinAndListen(client, guildId, channelId, handler) {
         selfDeaf: false,
     });
 
-    const socket = ensureSocket();
-
     connection.receiver.speaking.on('start', (userId) => {
+        const socket = ensureSocket(userId);
         const audioStream = connection.receiver.subscribe(userId, {
             end: { behavior: EndBehaviorType.AfterSilence, duration: 1000 },
         });
@@ -43,7 +49,7 @@ function joinAndListen(client, guildId, channelId, handler) {
         const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
 
         audioStream.pipe(opusDecoder).on('data', (chunk) => {
-            if (socket.readyState === WebSocket.OPEN) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(chunk);
             }
         });

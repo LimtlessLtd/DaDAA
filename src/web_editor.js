@@ -68,6 +68,11 @@ function sendJson(res, statusCode, payload) {
     res.end(JSON.stringify(payload));
 }
 
+function sendText(res, statusCode, text) {
+    res.writeHead(statusCode, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(text);
+}
+
 function sendFile(res, filePath, contentType) {
     fs.readFile(filePath, (error, data) => {
         if (error) {
@@ -252,6 +257,18 @@ function startWebEditor() {
                     }
                 } else {
                     sendJson(res, 200, []);
+                }
+                return;
+            }
+        }
+
+        if (pathname === '/api/transcript_log') {
+            if (req.method === 'GET') {
+                const transcriptPath = path.join(TEMP_DATA_ROOT, 'transcript_log.txt');
+                if (fs.existsSync(transcriptPath)) {
+                    sendText(res, 200, fs.readFileSync(transcriptPath, 'utf8'));
+                } else {
+                    sendText(res, 200, '');
                 }
                 return;
             }

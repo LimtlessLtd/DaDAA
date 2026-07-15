@@ -26,20 +26,22 @@ function saveMemory(memory) {
 }
 
 function summarizeTranscript(transcript, knowledgeIndex, relationships) {
+    const normalizedTranscript = String(transcript || '').trim();
     const relevantRecords = (knowledgeIndex?.records || [])
         .filter((record) => {
             const haystack = `${record.category} ${record.name}`.toLowerCase();
-            return transcript.toLowerCase().split(/\s+/).some((word) => haystack.includes(word) && word.length > 3);
+            return normalizedTranscript.toLowerCase().split(/\s+/).some((word) => haystack.includes(word) && word.length > 3);
         })
         .slice(0, 5);
 
     const recentLinks = (relationships || []).slice(-3).map((entry) => `${entry.source} → ${entry.target}`);
 
     return {
-        headline: transcript.trim() || 'No transcript captured yet.',
+        headline: normalizedTranscript ? normalizedTranscript.slice(0, 120) : 'No transcript captured yet.',
+        transcript: normalizedTranscript,
         relevantRecords,
         recentLinks,
-        advice: buildAdvice(transcript, relevantRecords, recentLinks),
+        advice: buildAdvice(normalizedTranscript, relevantRecords, recentLinks),
     };
 }
 
