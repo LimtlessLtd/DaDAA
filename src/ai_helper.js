@@ -73,9 +73,26 @@ function rememberSummary(summary) {
     return memory;
 }
 
+function rememberAiInsight(aiResponse, transcriptChunk) {
+    if (!aiResponse || !aiResponse.isImportant) return null;
+
+    const memory = loadMemory();
+    memory.summaries.push({
+        timestamp: new Date().toISOString(),
+        type: 'ai_insight',
+        suggestion: aiResponse.suggestion,
+        transcript: transcriptChunk,
+        importance: aiResponse.isImportant
+    });
+    memory.summaries = memory.summaries.slice(-30);
+    saveMemory(memory);
+    return memory;
+}
+
 module.exports = {
     buildAdvice,
     loadMemory,
     rememberSummary,
     summarizeTranscript,
+    rememberAiInsight
 };

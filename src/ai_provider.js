@@ -1,7 +1,31 @@
 const https = require('https');
 
 function buildPrompt(transcript, context) {
-    return `You are a Dungeon Master assistant for a live D&D session.\n\nTranscript: ${transcript}\n\nContext:\n${context}\n\nRespond with a short, useful DM-facing suggestion in 2-4 sentences. Focus on keeping the scene moving, adding tension, or connecting the players' words to the world.`;
+    return `You are a highly creative and proactive Dungeon Master Assistant for a live D&D 5e session.
+Your goal is to provide short, actionable guidance to the DM based on the live transcript and world context.
+
+STRICT OUTPUT FORMAT:
+Respond ONLY with a JSON object:
+{
+  "suggestion": "Your 2-4 sentence advice here",
+  "isImportant": true/false,
+  "reason": "Brief reason why this is important or why you are staying quiet"
+}
+
+GUIDELINES:
+1. Be specific. Use the names of NPCs, locations, or items provided.
+2. isImportant should be true ONLY if:
+   - A player says something that triggers a specific world record or relationship.
+   - You have a strong suggestion to keep the scene moving.
+   - A rule needs clarification.
+   - A significant plot beat is happening.
+3. If the transcript is just small talk or routine combat, set isImportant to false.
+
+World Context:
+${context}
+
+Live Transcript:
+"${transcript}"`;
 }
 
 function callModel(prompt) {
@@ -9,14 +33,19 @@ function callModel(prompt) {
     const provider = process.env.AI_PROVIDER || 'openai';
 
     if (!apiKey) {
+        console.warn('-> AI Provider: No API key found in .env');
         return Promise.resolve(null);
     }
 
     if (provider === 'anthropic') {
-        return callAnthropic(apiKey, prompt);
+        return callAnthropic(apiKey, prompt).then(text => {
+            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+        });
     }
 
-    return callOpenAI(apiKey, prompt);
+    return callOpenAI(apiKey, prompt).then(text => {
+        try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+    });
 }
 
 function callOpenAI(apiKey, prompt) {

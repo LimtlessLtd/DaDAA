@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { getAllWorldData } = require('./data_manager');
-const { buildKnowledgeIndex, loadRelationships, saveRelationships, addRelationship, initializeWorldContext, migrateRelationships } = require('./context_manager');
+const { buildKnowledgeIndex, loadRelationships, saveRelationships, addRelationship, initializeWorldContext, migrateRelationships, loadSessionState, saveSessionState } = require('./context_manager');
 const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote } = require('./session_manager');
 
 const UI_ROOT = path.join(__dirname, '..', 'UI');
@@ -107,9 +107,62 @@ function startWebEditor() {
             // small debug hook: uncomment to log incoming api paths
             // console.log('-> web-editor request', pathname);
 
+        if (pathname === '/api/session_state') {
+            if (req.method === 'GET') {
+                sendJson(res, 200, loadSessionState());
+                return;
+            }
+            if (req.method === 'POST') {
+                try {
+                    const payload = await readJsonBody(req);
+                    saveSessionState(payload);
+                    sendJson(res, 200, { ok: true });
+                } catch (err) {
+                    sendJson(res, 400, { error: err.message });
+                }
+                return;
+            }
+        }
+
         if (pathname === '/api/health') {
             sendJson(res, 200, { ok: true });
             return;
+        }
+
+        if (pathname === '/api/purge') {
+            if (req.method === 'POST') {
+                try {
+                    const payload = await readJsonBody(req);
+                    if (payload.confirm !== 'PURGE') {
+                        sendJson(res, 400, { error: 'Confirmation key "PURGE" is required.' });
+                        return;
+                    }
+
+                    const filesToReset = {
+                        'relationships.json': '[]',
+                        'session_notes.json': '[]',
+                        'session_reminders.json': '[]',
+                        'session_state.json': '{"activeScene": null, "activeNpcs": [], "activeQuests": []}',
+                        'ai_memory.json': '{"summaries": []}',
+                        'transcript_log.txt': ''
+                    };
+
+                    Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
+                        const filePath = path.join(TEMP_DATA_ROOT, filename);
+                        try {
+                            fs.writeFileSync(filePath, defaultValue, 'utf8');
+                        } catch (e) {
+                            console.warn(`-> Failed to reset ${filename}:`, e.message);
+                        }
+                    });
+
+                    console.log('-> Local campaign session data has been purged successfully.');
+                    sendJson(res, 200, { ok: true, message: 'All local session data has been purged.' });
+                } catch (error) {
+                    sendJson(res, 500, { error: error.message });
+                }
+                return;
+            }
         }
 
         if (pathname === '/api/records') {

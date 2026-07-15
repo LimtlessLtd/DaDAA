@@ -5,9 +5,27 @@ const { getAllWorldData } = require('./data_manager');
 const dataDir = path.join(__dirname, '..', 'temp_data');
 const relationshipsPath = path.join(dataDir, 'relationships.json');
 const transcriptLogPath = path.join(dataDir, 'transcript_log.txt');
+const sessionStatePath = path.join(dataDir, 'session_state.json');
 
 function ensureDataDirectories() {
     fs.mkdirSync(dataDir, { recursive: true });
+}
+
+function loadSessionState() {
+    ensureDataDirectories();
+    if (!fs.existsSync(sessionStatePath)) {
+        return { activeScene: null, activeNpcs: [], activeQuests: [] };
+    }
+    try {
+        return JSON.parse(fs.readFileSync(sessionStatePath, 'utf8'));
+    } catch (e) {
+        return { activeScene: null, activeNpcs: [], activeQuests: [] };
+    }
+}
+
+function saveSessionState(state) {
+    ensureDataDirectories();
+    fs.writeFileSync(sessionStatePath, JSON.stringify(state, null, 2));
 }
 
 function normalizeText(value = '') {
@@ -37,7 +55,10 @@ function buildKnowledgeIndex(worldData = {}) {
 
             const normalizedName = normalizeText(name);
             if (normalizedName) {
-                index.byName.set(normalizedName, entry);
+                // Store multiple records under the same name if necessary, or just the first
+                if (!index.byName.has(normalizedName)) {
+                    index.byName.set(normalizedName, entry);
+                }
             }
 
             if (!index.categories.has(category)) {
@@ -62,33 +83,32 @@ function resolveRecordReference(knowledgeIndex, input) {
     const exact = knowledgeIndex.byName.get(normalized);
     if (exact) return exact;
 
+    // Fuzzy match
     return knowledgeIndex.records.find((record) => normalizeText(record.name).includes(normalized)) || null;
 }
 
 function findRelevantRecords(knowledgeIndex, text) {
-    const tokens = normalizeText(text).split(/\s+/).filter(Boolean);
+    const sessionState = loadSessionState();
+    const tokens = normalizeText(text).split(/\s+/).filter(token => token.length > 3);
     const matches = [];
     const seen = new Set();
 
+    // Prioritize active session elements if they appear in text
+    if (sessionState.activeScene) tokens.push(normalizeText(sessionState.activeScene));
+    sessionState.activeNpcs.forEach(npc => tokens.push(normalizeText(npc)));
+
     tokens.forEach((token) => {
-        const record = knowledgeIndex.byName.get(token);
-        if (record && !seen.has(record._id)) {
-            matches.push(record);
-            seen.add(record._id);
-        }
+        // Simple keyword match against record names
+        const found = knowledgeIndex.records.filter(r => normalizeText(r.name).includes(token));
+        found.forEach(record => {
+            if (!seen.has(record._id)) {
+                matches.push(record);
+                seen.add(record._id);
+            }
+        });
     });
 
-    if (matches.length === 0) {
-        const phrase = normalizeText(text);
-        if (phrase) {
-            const phraseMatch = knowledgeIndex.byName.get(phrase);
-            if (phraseMatch) {
-                matches.push(phraseMatch);
-            }
-        }
-    }
-
-    return matches.slice(0, 5);
+    return matches.slice(0, 8);
 }
 
 function loadRelationships() {
@@ -169,7 +189,41 @@ function migrateRelationships(knowledgeIndex) {
 
 function appendTranscript(text, source = 'discord') {
     ensureDataDirectories();
-    const line = `[${new Date().toISOString()}] [${source}] ${text}`;
+    const now = new Date();
+    const timestamp = now.toISOString();
+    // Attempt to merge with last line if same source and recent
+    let merged = false;
+    try {
+        if (fs.existsSync(transcriptLogPath)) {
+            const contents = fs.readFileSync(transcriptLogPath, 'utf8');
+            const lines = contents.split('\n').filter(Boolean);
+            const last = lines.length ? lines[lines.length - 1] : null;
+            if (last) {
+                const m = last.match(/^\[(.+?)\] \[(.+?)\] (.*)$/);
+                if (m) {
+                    const lastTs = new Date(m[1]);
+                    const lastSource = m[2];
+                    const lastText = m[3];
+                    const deltaSec = (now - lastTs) / 1000;
+                    // Merge when the same source speaks again within 12 seconds and last text isn't huge.
+                    if (String(lastSource) === String(source) && deltaSec <= 12 && (String(lastText).length < 400)) {
+                        // If lastText ends with sentence punctuation, preserve it but still merge to avoid tiny splits.
+                        const sep = lastText.match(/[.!?]$/) ? ' ' : ' ';
+                        const newText = `${lastText}${sep}${text}`.replace(/\s+/g, ' ').trim();
+                        lines[lines.length - 1] = `[${m[1]}] [${source}] ${newText}`;
+                        fs.writeFileSync(transcriptLogPath, lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
+                        merged = true;
+                        return `[${m[1]}] [${source}] ${newText}`;
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        // ignore merge failures and fall back to appending
+        console.warn('-> appendTranscript merge failed:', err && err.message);
+    }
+
+    const line = `[${timestamp}] [${source}] ${text}`;
     fs.appendFileSync(transcriptLogPath, `${line}\n`, 'utf8');
     return line;
 }
@@ -182,6 +236,7 @@ function readTranscriptLog() {
 }
 
 function buildDmSuggestion(transcript, knowledgeIndex, relationships) {
+    const sessionState = loadSessionState();
     const relevant = findRelevantRecords(knowledgeIndex, transcript);
     const contextSummary = relevant.length > 0
         ? relevant.map((record) => `${record.category}: ${record.name}`).join(' | ')
@@ -190,7 +245,9 @@ function buildDmSuggestion(transcript, knowledgeIndex, relationships) {
     const recentLinks = (relationships || []).slice(-3).map((entry) => `${entry.source} → ${entry.target} (${entry.type})`);
     const linkSummary = recentLinks.length > 0 ? `Recent links: ${recentLinks.join('; ')}` : 'No saved relationships yet.';
 
-    return `DM cue: ${transcript}\nContext: ${contextSummary}\n${linkSummary}`;
+    const sessionSummary = `Active Scene: ${sessionState.activeScene || 'Unknown'} | NPCs: ${sessionState.activeNpcs.join(', ') || 'None'}`;
+
+    return `DM cue: ${transcript}\nSession State: ${sessionSummary}\nContext: ${contextSummary}\n${linkSummary}`;
 }
 
 async function initializeWorldContext() {
@@ -232,7 +289,7 @@ async function initializeWorldContext() {
         }
     }
 
-    return { worldData, knowledgeIndex, relationships };
+    return { worldData, knowledgeIndex, relationships, sessionState: loadSessionState() };
 }
 
 module.exports = {
@@ -247,4 +304,6 @@ module.exports = {
     resolveRecordReference,
     saveRelationships,
     migrateRelationships,
+    loadSessionState,
+    saveSessionState,
 };

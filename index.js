@@ -5,8 +5,8 @@ const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinAndListen } = require('./src/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
-const { initializeWorldContext, addRelationship, appendTranscript, readTranscriptLog, buildDmSuggestion } = require('./src/context_manager');
-const { rememberSummary, summarizeTranscript } = require('./src/ai_helper');
+const { initializeWorldContext, addRelationship, appendTranscript, readTranscriptLog, buildDmSuggestion, loadSessionState, saveSessionState } = require('./src/context_manager');
+const { rememberSummary, summarizeTranscript, rememberAiInsight } = require('./src/ai_helper');
 const { buildPrompt, callModel } = require('./src/ai_provider');
 const { startWebEditor } = require('./src/web_editor');
 const { loadSessionNotes, findTriggeredNotes } = require('./src/session_manager');
@@ -65,11 +65,45 @@ client.on('messageCreate', async (message) => {
 
     console.log('-> Message received:', message.content);
 
+    if (message.content.startsWith('!scene ')) {
+        const scene = message.content.slice(7).trim();
+        const state = loadSessionState();
+        state.activeScene = scene;
+        saveSessionState(state);
+        message.reply(`Active scene set to: **${scene}**`);
+        return;
+    }
+
+    if (message.content.startsWith('!npc ')) {
+        const npc = message.content.slice(5).trim();
+        const state = loadSessionState();
+        if (!state.activeNpcs) state.activeNpcs = [];
+        if (state.activeNpcs.includes(npc)) {
+            state.activeNpcs = state.activeNpcs.filter(n => n !== npc);
+            message.reply(`Removed **${npc}** from active NPCs.`);
+        } else {
+            state.activeNpcs.push(npc);
+            message.reply(`Added **${npc}** to active NPCs.`);
+        }
+        saveSessionState(state);
+        return;
+    }
+
     if (message.content === '!join') {
         const voiceChannel = message.member?.voice?.channel;
         if (voiceChannel) {
             joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript) => {
-                appendTranscript(transcript, userId);
+                // Resolve a friendly username when possible for clearer UI
+                let sourceLabel = userId;
+                try {
+                    const userObj = await client.users.fetch(userId);
+                    if (userObj && (userObj.username || userObj.tag)) {
+                        sourceLabel = userObj.username || userObj.tag;
+                    }
+                } catch (e) {
+                    // fallback to raw id
+                }
+                appendTranscript(transcript, sourceLabel);
                 if (worldContext) {
                     const sessionNotes = loadSessionNotes();
                     const triggered = findTriggeredNotes(sessionNotes, transcript);
@@ -81,13 +115,25 @@ client.on('messageCreate', async (message) => {
                     }
 
                     const summary = summarizeTranscript(transcript, worldContext.knowledgeIndex, worldContext.relationships);
-                    rememberSummary(summary);
-                    const prompt = buildPrompt(transcript, `${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'No local records matched.'}\n\nRelationships:\n${summary.recentLinks.join('\n') || 'None'}`);
+                    // rememberSummary(summary); // We will prioritize rememberAiInsight for importance filtering
+
+                    const sessionState = loadSessionState();
+                    const contextString = `
+Current Scene: ${sessionState.activeScene || 'Unknown'}
+Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
+Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+Relationships: ${summary.recentLinks.join('\n') || 'None'}
+                    `.trim();
+
+                    const prompt = buildPrompt(transcript, contextString);
                     callModel(prompt)
                         .then((aiReply) => {
-                            if (aiReply) {
-                                console.log(`-> AI DM reply: ${aiReply}`);
-                                sendDmToOwner(`DM guidance:\n${aiReply}`);
+                            if (aiReply && aiReply.suggestion) {
+                                console.log(`-> AI DM reply: ${aiReply.suggestion} (Important: ${aiReply.isImportant})`);
+                                rememberAiInsight(aiReply, transcript);
+                                if (aiReply.isImportant) {
+                                    sendDmToOwner(`DM guidance:\n${aiReply.suggestion}`);
+                                }
                             }
                         })
                         .catch((error) => console.warn('-> AI provider unavailable:', error.message));
@@ -158,10 +204,21 @@ client.on('messageCreate', async (message) => {
         const latestTranscript = transcriptLog
             .split('\n')
             .filter(Boolean)
-            .slice(-1)[0]
-            ?.replace(/^\[[^\]]+\]\s+\[[^\]]+\]\s+/, '') || 'No transcript yet.';
+            .slice(-3) // Last 3 lines for better context
+            .map(line => line.replace(/^\[[^\]]+\]\s+\[[^\]]+\]\s+/, ''))
+            .join(' ') || 'No transcript yet.';
+
+        const sessionState = loadSessionState();
         const summary = summarizeTranscript(latestTranscript, worldContext.knowledgeIndex, worldContext.relationships);
-        const prompt = buildPrompt(latestTranscript, `${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'No local records matched.'}\n\nRelationships:\n${summary.recentLinks.join('\n') || 'None'}`);
+        
+        const contextString = `
+Current Scene: ${sessionState.activeScene || 'Unknown'}
+Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
+Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+Relationships: ${summary.recentLinks.join('\n') || 'None'}
+        `.trim();
+
+        const prompt = buildPrompt(latestTranscript, contextString);
         callModel(prompt)
             .then((aiReply) => {
                 const reply = aiReply || summary.advice;
