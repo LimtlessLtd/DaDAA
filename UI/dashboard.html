@@ -104,6 +104,7 @@
 
     <div class="panel" style="margin-top:16px">
       <h2>Transcript History</h2>
+      <button id="transcriptToggleBtn" style="margin-bottom:12px;">Show full transcript</button>
       <div id="transcriptLog"></div>
     </div>
 
@@ -195,7 +196,7 @@
       document.getElementById('notesList').innerHTML = notes.length ? notes.map(n => `<div class="item"><strong>${n.trigger}</strong>: ${n.note} <button onclick="deleteNote('${n.id}')">Delete</button></div>`).join('') : '<div class="item">No notes yet.</div>';
       document.getElementById('triggeredReminders').innerHTML = triggered.length ? triggered.map(n => `<div class="item"><strong>${n.trigger}</strong><br/>${n.note}</div>`).join('') : '<div class="item">No triggered reminders yet.</div>';
       const transcriptLogText = await fetch('/api/transcript_log').then((r) => r.text()).catch(() => 'Unable to load transcript log.');
-      document.getElementById('transcriptLog').innerText = transcriptLogText || 'No transcript yet.';
+      renderTranscriptLog(transcriptLogText || '');
     }
 
     function switchTab(tabName) {
@@ -249,6 +250,8 @@
 
     const speakerColors = ['#2563eb', '#10b981', '#f59e0b', '#f97316', '#8b5cf6', '#ec4899', '#14b8a6'];
     const speakerColorMap = {};
+    let transcriptFullView = false;
+    const transcriptPreviewLines = 20;
 
     function getSpeakerColor(source) {
       if (!speakerColorMap[source]) {
@@ -259,11 +262,18 @@
     }
 
     function renderTranscriptLog(text) {
-      const lines = String(text).split('\n').filter(Boolean);
+      let lines = String(text).split('\n').filter(Boolean);
       if (lines.length === 0) {
         document.getElementById('transcriptLog').innerHTML = '<div class="item">No transcript yet.</div>';
+        updateTranscriptToggle();
         return;
       }
+
+      if (!transcriptFullView) {
+        lines = lines.slice(-transcriptPreviewLines);
+      }
+
+      updateTranscriptToggle();
 
       document.getElementById('transcriptLog').innerHTML = lines.map((line) => {
         const match = line.match(/^\[(.+?)\] \[(.+?)\] (.*)$/);
@@ -274,6 +284,17 @@
         const color = getSpeakerColor(source);
         return `<div class="item" style="border-left:4px solid ${color}; padding-left:12px;"><div><strong>${escapeHtml(source)}</strong> <span style="color:#9ca3af; font-size:12px; margin-left:8px">${escapeHtml(timestamp)}</span></div><div style="margin-top:6px; color:#d1d5db">${escapeHtml(transcriptText)}</div></div>`;
       }).join('');
+    }
+
+    function updateTranscriptToggle() {
+      const button = document.getElementById('transcriptToggleBtn');
+      if (!button) return;
+      button.innerText = transcriptFullView ? `Show latest ${transcriptPreviewLines} lines` : 'Show full transcript';
+    }
+
+    function toggleTranscriptView() {
+      transcriptFullView = !transcriptFullView;
+      loadData();
     }
 
     document.getElementById('sourceSearch').addEventListener('input', (e) => searchRecords(e.target.value, 'source'));
@@ -298,6 +319,8 @@
     document.getElementById('linkCancelBtn').addEventListener('click', () => {
       document.getElementById('linkPanel').style.display = 'none';
     });
+
+    document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
 
     // Load categories into selects
     async function loadCategories() {

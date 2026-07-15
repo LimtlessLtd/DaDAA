@@ -262,7 +262,7 @@ function startWebEditor() {
             }
         }
 
-        if (pathname === '/api/transcript_log') {
+        if (pathname === '/api/transcript_log' || url.pathname === '/api/transcript_log' || pathname === '/api/transcript_log/') {
             if (req.method === 'GET') {
                 const transcriptPath = path.join(TEMP_DATA_ROOT, 'transcript_log.txt');
                 if (fs.existsSync(transcriptPath)) {

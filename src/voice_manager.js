@@ -13,9 +13,36 @@ function ensureSocket(userId) {
         return existing;
     }
 
-    const socket = new WebSocket(`ws://localhost:8765?userId=${encodeURIComponent(userId)}`);
-    socket.on('open', () => console.log(`-> Connected to AI Transcription Server for user ${userId}`));
-    socket.on('error', (err) => console.error('-> WebSocket Error:', err));
+    const socket = new WebSocket('ws://localhost:8765');
+    socket.on('open', () => {
+        console.log(`-> Connected to AI Transcription Server for user ${userId}`);
+        try {
+            socket.send(JSON.stringify({ type: 'handshake', userId }));
+        } catch (error) {
+            console.error('-> Failed to send transcription handshake:', error.message || error);
+        }
+    });
+    socket.on('error', (err) => {
+        console.error('-> WebSocket Error:', err.message || err);
+        if (socketsByUser.get(userId) === socket) {
+            socketsByUser.delete(userId);
+        }
+    });
+    socket.on('close', (code, reason) => {
+        console.log(`-> Transcription socket closed for user ${userId}: ${code} ${reason}`);
+        if (socketsByUser.get(userId) === socket) {
+            socketsByUser.delete(userId);
+        }
+    });
+    socket.on('unexpected-response', (req, res) => {
+        console.error(`-> Transcription unexpected response for user ${userId}: ${res.statusCode}`);
+        if (socketsByUser.get(userId) === socket) {
+            socketsByUser.delete(userId);
+        }
+    });
+    socket.on('pong', () => {
+        // Keepalive
+    });
     socket.on('message', (message) => {
         try {
             const payload = JSON.parse(message.toString());
@@ -46,7 +73,7 @@ function joinAndListen(client, guildId, channelId, handler) {
             end: { behavior: EndBehaviorType.AfterSilence, duration: 1000 },
         });
 
-        const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+        const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 1, frameSize: 960 });
 
         audioStream.pipe(opusDecoder).on('data', (chunk) => {
             if (socket && socket.readyState === WebSocket.OPEN) {
