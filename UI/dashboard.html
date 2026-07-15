@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DaDAA Relationship Dashboard</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; background: #111827; color: #f9fafb; padding: 20px; }
+    h1 { margin-bottom: 8px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .panel { background: #1f2937; border: 1px solid #374151; border-radius: 10px; padding: 16px; }
+    .item { background: #0b1220; padding: 10px; border-radius: 8px; margin-bottom: 8px; }
+    input, select, button { padding: 8px; border-radius: 6px; border: 1px solid #374151; background: #0b1220; color: #f9fafb; }
+    input { width: 100%; }
+    button { cursor: pointer; background: #2563eb; color: white; border: none; padding: 8px 12px; }
+    .row { display:flex; gap:8px; }
+    code { color: #fbbf24; }
+    pre { background:#09101a; padding:8px; border-radius:6px; color:#d1d5db; overflow:auto }
+  </style>
+</head>
+<body>
+  <h1>DaDAA Relationship Dashboard</h1>
+  <p>Create and manage relationships between world records from the browser.</p>
+
+  <div class="panel">
+    <h2>Create Relationship</h2>
+    <div class="row">
+      <input id="sourceSearch" placeholder="Search source record" />
+      <input id="targetSearch" placeholder="Search target record" />
+    </div>
+    <div style="margin-top:8px;">
+      <select id="relationType">
+        <option value="related">related</option>
+        <option value="owns">owns</option>
+        <option value="mentions">mentions</option>
+        <option value="belongs_to">belongs_to</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button id="saveRelationBtn">Save relationship</button>
+      <button id="refreshBtn">Refresh World</button>
+    </div>
+
+    <div id="searchResults" style="margin-top:12px"></div>
+    <div id="recordDetails" style="margin-top:12px; display:none;"></div>
+  </div>
+
+  <div style="height:16px"></div>
+
+  <div class="panel">
+    <h2>Browse By Category</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="browseCategorySelect" style="flex:1">
+        <option value="">-- select category --</option>
+      </select>
+      <button id="browseLoadBtn">Load</button>
+    </div>
+    <div id="browseResults" style="margin-top:12px"></div>
+  </div>
+
+  <div id="linkPanel" class="panel" style="display:none;margin-top:12px">
+    <h3>Linking: <span id="linkSourceLabel"></span></h3>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="linkTargetCategory" style="flex:1"></select>
+      <input id="linkTargetSearch" placeholder="Search target within category" />
+      <button id="linkSearchBtn">Search</button>
+    </div>
+    <div id="linkSearchResults" style="margin-top:12px"></div>
+    <div style="margin-top:8px"><button id="linkCancelBtn">Cancel</button></div>
+  </div>
+
+  <div style="height:16px"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Relationships</h2>
+      <div id="relationships"></div>
+    </div>
+    <div class="panel">
+      <h2>Session Notes</h2>
+      <input id="noteTrigger" placeholder="Trigger keyword (e.g. 'ambush')" />
+      <input id="noteText" placeholder="Note text to remind the DM" style="margin-top:8px" />
+      <div style="margin-top:8px"><button id="saveNoteBtn">Save note</button></div>
+      <div id="notesList" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:12px">
+    <div class="panel">
+      <h2>Recent AI Memory</h2>
+      <div id="memory"></div>
+    </div>
+    <div class="panel">
+      <h2>Help & Status</h2>
+      <div id="status">Ready</div>
+      <div style="margin-top:12px">
+        <h3 style="margin-bottom:8px">Triggered Reminders</h3>
+        <div id="triggeredReminders"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let selectedSourceId = null;
+    let selectedTargetId = null;
+    let selectedSourceLabel = null;
+    let selectedTargetLabel = null;
+
+    async function searchRecords(query, target) {
+      if (!query) { document.getElementById('searchResults').innerHTML = ''; return; }
+      const results = await fetch('/api/records?query=' + encodeURIComponent(query)).then((r) => r.json());
+      const container = document.getElementById('searchResults');
+      container.innerHTML = results.map((item) =>
+        `<div class="item"><div style="display:flex;justify-content:space-between;align-items:center"><div>${item.label}</div><div><button onclick="viewDetails('${item.id}')">View</button> <button onclick="quickSelect('${item.id}','${item.label}','${target}')">Use</button></div></div></div>`
+      ).join('');
+    }
+
+    async function createRelation() {
+      const sourceLabel = selectedSourceLabel || document.getElementById('sourceSearch').value;
+      const targetLabel = selectedTargetLabel || document.getElementById('targetSearch').value;
+      const type = document.getElementById('relationType').value;
+      const payload = { source: sourceLabel, target: targetLabel, type };
+      if (selectedSourceId) payload.sourceId = selectedSourceId;
+      if (selectedTargetId) payload.targetId = selectedTargetId;
+      await fetch('/api/relationships', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      loadData();
+    }
+
+    function quickSelect(id, label, target) {
+      if (target === 'source') {
+        selectedSourceId = id;
+        selectedSourceLabel = label;
+        document.getElementById('sourceSearch').value = label;
+      } else {
+        selectedTargetId = id;
+        selectedTargetLabel = label;
+        document.getElementById('targetSearch').value = label;
+      }
+    }
+
+    async function viewDetails(id) {
+      const details = document.getElementById('recordDetails');
+      try {
+        const rec = await fetch('/api/record?id=' + encodeURIComponent(id)).then(r => r.json());
+        details.style.display = 'block';
+        const label = (rec.category || 'unknown') + ':' + (rec.name || rec.title || rec._id);
+        const img = rec.img ? `<img src="${rec.img}" style="max-width:100px;max-height:100px;margin-right:8px;border-radius:6px">` : '';
+        const sysSummary = rec.system ? Object.keys(rec.system).slice(0,6).join(', ') : '';
+        details.innerHTML = `<div style="display:flex;gap:12px;align-items:flex-start"><div>${img}</div><div><strong>${label}</strong><div style="font-size:12px;color:#9ca3af">${rec.type || ''} ${rec.category || ''}</div><div style="margin-top:8px;font-size:13px;color:#d1d5db">${sysSummary}</div></div></div>` +
++          `<div style="margin-top:8px"><button onclick="useAs('${id}','${label}','source')">Use as source</button> <button onclick="useAs('${id}','${label}','target')">Use as target</button> <button onclick="showRaw('${encodeURIComponent(JSON.stringify(rec))}')">Raw</button></div>`;
+      } catch (e) {
+        details.style.display = 'block';
+        details.innerText = 'Error loading record details';
+      }
+    }
+
+    function showRaw(encoded) {
+      const raw = decodeURIComponent(encoded);
+      const details = document.getElementById('recordDetails');
+      details.innerHTML = `<pre>${raw}</pre>` + details.innerHTML;
+    }
+
+    function useAs(id, label, target) {
+      if (target === 'source') {
+        selectedSourceId = id;
+        selectedSourceLabel = label;
+        document.getElementById('sourceSearch').value = label;
+      } else {
+        selectedTargetId = id;
+        selectedTargetLabel = label;
+        document.getElementById('targetSearch').value = label;
+      }
+    }
+
+    async function loadData() {
+      const rels = await fetch('/api/relationships').then((r) => r.json()).catch(() => []);
+      const memory = await fetch('/temp_data/ai_memory.json').then((r) => r.json()).catch(() => ({ summaries: [] }));
+      const notes = await fetch('/api/session_notes').then((r) => r.json()).catch(() => []);
+      const triggered = await fetch('/api/session_reminders').then((r) => r.json()).catch(() => []);
+      document.getElementById('relationships').innerHTML = rels.length ? rels.slice(-20).reverse().map((item) => `<div class="item"><strong>${item.type}</strong><br/>${item.source} → ${item.target} <button onclick="deleteRelation('${item.id}')">Delete</button></div>`).join('') : '<div class="item">No relationships yet.</div>';
+      document.getElementById('memory').innerHTML = memory.summaries && memory.summaries.length ? memory.summaries.slice(-8).reverse().map((entry) => `<div class="item"><code>${entry.timestamp}</code><br/>${entry.summary.headline}</div>`).join('') : '<div class="item">No saved summaries yet.</div>';
+      document.getElementById('notesList').innerHTML = notes.length ? notes.map(n => `<div class="item"><strong>${n.trigger}</strong>: ${n.note} <button onclick="deleteNote('${n.id}')">Delete</button></div>`).join('') : '<div class="item">No notes yet.</div>';
+      document.getElementById('triggeredReminders').innerHTML = triggered.length ? triggered.map(n => `<div class="item"><strong>${n.trigger}</strong><br/>${n.note}</div>`).join('') : '<div class="item">No triggered reminders yet.</div>';
+    }
+
+    async function deleteRelation(id) {
+      await fetch('/api/relationships/' + id, { method: 'DELETE' });
+      loadData();
+    }
+
+    async function refreshWorld() {
+      document.getElementById('status').innerText = 'Refreshing...';
+      const res = await fetch('/api/refresh', { method: 'POST' }).then(r => r.json()).catch(() => null);
+      if (res && res.ok) {
+        document.getElementById('status').innerText = `Refreshed: ${res.records} records, ${res.relationships} relationships, migrated:${res.migrated}`;
+      } else {
+        document.getElementById('status').innerText = 'Refresh failed';
+      }
+      loadData();
+    }
+
+    async function saveNote() {
+      const trigger = document.getElementById('noteTrigger').value;
+      const note = document.getElementById('noteText').value;
+      if (!trigger || !note) return alert('Trigger and note required');
+      await fetch('/api/session_notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trigger, note }) });
+      document.getElementById('noteTrigger').value = '';
+      document.getElementById('noteText').value = '';
+      loadData();
+    }
+
+    async function deleteNote(id) {
+      await fetch('/api/session_notes/' + id, { method: 'DELETE' });
+      loadData();
+    }
+
+    document.getElementById('sourceSearch').addEventListener('input', (e) => searchRecords(e.target.value, 'source'));
+    document.getElementById('targetSearch').addEventListener('input', (e) => searchRecords(e.target.value, 'target'));
+    document.getElementById('saveRelationBtn').addEventListener('click', createRelation);
+    document.getElementById('refreshBtn').addEventListener('click', refreshWorld);
+    document.getElementById('saveNoteBtn').addEventListener('click', saveNote);
+    document.getElementById('browseLoadBtn').addEventListener('click', () => {
+      const cat = document.getElementById('browseCategorySelect').value;
+      browseCategory(cat);
+    });
+
+    document.getElementById('linkSearchBtn').addEventListener('click', async () => {
+      const cat = document.getElementById('linkTargetCategory').value;
+      const q = document.getElementById('linkTargetSearch').value;
+      await searchTargetsInCategory(q, cat);
+    });
+
+    document.getElementById('linkCancelBtn').addEventListener('click', () => {
+      document.getElementById('linkPanel').style.display = 'none';
+    });
+
+    // Load categories into selects
+    async function loadCategories() {
+      let cats = [];
+      try {
+        cats = await fetch('/api/categories').then(r => r.json());
+      } catch (e) {
+        try {
+          cats = await fetch('/temp_data/categories.json').then(r => r.json());
+        } catch (e2) {
+          cats = [];
+        }
+      }
+      const sel = document.getElementById('browseCategorySelect');
+      const sel2 = document.getElementById('linkTargetCategory');
+      sel.innerHTML = '<option value="">-- select category --</option>' + cats.map(c => `<option value="${c.category}">${c.category} (${c.count})</option>`).join('');
+      sel2.innerHTML = '<option value="">-- select category --</option>' + cats.map(c => `<option value="${c.category}">${c.category} (${c.count})</option>`).join('');
+    }
+
+    async function browseCategory(category) {
+      if (!category) return;
+      const items = await fetch('/api/records?category=' + encodeURIComponent(category)).then(r => r.json()).catch(() => []);
+      document.getElementById('browseResults').innerHTML = items.map(i => `<div class="item">${i.label} <button onclick="linkThis('${i.id}','${i.label}')">Link this</button> <button onclick="viewDetails('${i.id}')">View</button></div>`).join('');
+    }
+
+    function linkThis(id, label) {
+      selectedSourceId = id;
+      selectedSourceLabel = label;
+      document.getElementById('linkSourceLabel').innerText = label;
+      document.getElementById('linkPanel').style.display = 'block';
+      document.getElementById('linkTargetSearch').value = '';
+      document.getElementById('linkSearchResults').innerHTML = '';
+    }
+
+    async function searchTargetsInCategory(query, category) {
+      if (!category) { alert('Select a target category'); return; }
+      const results = await fetch('/api/records?category=' + encodeURIComponent(category) + '&query=' + encodeURIComponent(query)).then(r => r.json()).catch(() => []);
+      document.getElementById('linkSearchResults').innerHTML = results.map(i => `<div class="item">${i.label} <button onclick="linkTo('${i.id}','${i.label}')">Link to this</button> <button onclick="viewDetails('${i.id}')">View</button></div>`).join('');
+    }
+
+    async function linkTo(targetId, targetLabel) {
+      const payload = { source: selectedSourceLabel, target: targetLabel, type: document.getElementById('relationType').value, sourceId: selectedSourceId, targetId };
+      await fetch('/api/relationships', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      document.getElementById('linkPanel').style.display = 'none';
+      loadData();
+    }
+
+    // Initialize categories and reminders
+    loadCategories();
+    loadData();
+    setInterval(loadData, 5000);
+  </script>
+</body>
+</html>
