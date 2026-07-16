@@ -88,14 +88,6 @@ function joinAndListen(client, guildId, channelId, handler) {
     connection.subscribe(audioPlayer);
 
     connection.receiver.speaking.on('start', (userId) => {
-        // Interruption: If a user starts speaking, stop the AI immediately.
-        if (isPlayingTts) {
-            console.log(`-> Interrupting DM TTS playback due to user ${userId} speaking.`);
-            audioPlayer.stop(); // Stops current playback immediately
-            ttsQueue = []; // Clear any queued sentences
-            isPlayingTts = false;
-        }
-
         // Prevent registering duplicate streams/subscriptions for the same user if they are already speaking
         if (activeStreams.has(userId)) {
             return;
@@ -184,6 +176,7 @@ function processTtsQueue() {
         }
 
         try {
+            // gTTS produces mp3 files under the hood even if named .wav, but discordjs/voice + ffmpeg can handle it natively.
             const resource = createAudioResource(tempAudioPath);
             audioPlayer.play(resource);
         } catch (e) {

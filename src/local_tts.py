@@ -1,21 +1,34 @@
 import sys
 import pyttsx3
+from gtts import gTTS
+import os
 
 def generate_tts(text, output_path, profile="narrator"):
+    # For a high-quality narrator voice, we'll use gTTS (Google TTS)
+    # For goblins, monsters, and old men, we'll fall back to pyttsx3 which allows rate/pitch modification
+    
+    profile = profile.lower()
+    
+    if profile == "narrator" or profile == "female":
+        try:
+            # gTTS produces much higher quality, natural-sounding audio
+            # tld='co.uk' gives it a nice British narrator accent
+            tts = gTTS(text=text, lang='en', tld='co.uk' if profile == "narrator" else 'com')
+            tts.save(output_path)
+            return
+        except Exception as e:
+            print(f"gTTS failed: {e}. Falling back to pyttsx3.")
+
+    # Fallback / Character Voice handling
     engine = pyttsx3.init()
     
     voices = engine.getProperty('voices')
     voice_id = voices[0].id if voices else None
     
-    # Default narrator settings
     rate = 150
-    pitch_modifier = 0  # pitch is hard to modify across OSs with pyttsx3, so we mainly use rate/voice
     
-    # Apply voice profiles
-    profile = profile.lower()
     if profile == "goblin":
         rate = 220
-        # Try to find a lighter or different voice if available
         for v in voices:
             if "Zira" in v.name or "Hazel" in v.name or "female" in v.name.lower():
                 voice_id = v.id
@@ -24,12 +37,6 @@ def generate_tts(text, output_path, profile="narrator"):
         rate = 110
         for v in voices:
             if "David" in v.name or "male" in v.name.lower():
-                voice_id = v.id
-                break
-    elif profile == "female":
-        rate = 160
-        for v in voices:
-            if "Zira" in v.name or "Hazel" in v.name or "female" in v.name.lower():
                 voice_id = v.id
                 break
     elif profile == "monster":
