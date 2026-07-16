@@ -12,6 +12,8 @@ Respond ONLY with a JSON object:
   "isImportant": true/false,
   "suggestion": "Your 2-4 sentence advice here",
   "reason": "Why this is important",
+  "spokenNarrative": "Optional: Write a compelling line of dialogue or narrative for the DM to speak aloud to the players, or leave empty if nothing needs to be said right now.",
+  "voiceProfile": "Optional: One of [narrator, goblin, old_man, female, monster] to match the character speaking. Default is narrator.",
   "characterLogs": [
     {
       "character": "Character Name",
@@ -30,9 +32,12 @@ GUIDELINES:
    - When players mention or interact with major local lore objects, gods, relics, active scenes, or active NPCs provided in the context.
    - When there is a tactical opportunity, threat, combat trigger, or puzzle solution.
    - When the player makes a critical choice that should have immediate environmental or lore consequences.
+   - When the transcript says "(Players are silent and awaiting the Dungeon Master's lead)" you MUST set isImportant to true and provide narrative to progress the scene!
    Otherwise, set "isImportant" to false so the DM is not distracted by routine roleplay or basic descriptions.
-5. Character Logs: If the transcript contains a major character development, traumatic experience, notable NPC interaction, or major plot event for a player character, log it in "characterLogs". Leave it as an empty array [] if nothing major happened to a character in this transcript segment. Use the Discord User to Character Map to understand which character is acting based on the speaker.
-6. DM Intent & Planning: Use the "Next Session Plan" to guide your suggestions and reactions to help the DM subtly steer or prepare the players for their planned upcoming events.
+5. In-Character Speech (spokenNarrative): If isImportant is true, you can optionally provide a "spokenNarrative". This string will be converted to Text-to-Speech and played directly into the Discord channel. Write it in the tone of a mysterious, dramatic Dungeon Master. Keep it under 2 sentences. 
+6. Voice Profiles: If spokenNarrative is provided, specify the "voiceProfile" to match the speaker (e.g., "goblin" for a squeaky voice, "old_man" for a slow voice).
+7. Character Logs: If the transcript contains a major character development, traumatic experience, notable NPC interaction, or major plot event for a player character, log it in "characterLogs". Leave it as an empty array [] if nothing major happened to a character in this transcript segment. Use the Discord User to Character Map to understand which character is acting based on the speaker.
+8. DM Intent & Planning: Use the "Next Session Plan" to guide your suggestions and reactions to help the DM subtly steer or prepare the players for their planned upcoming events.
 
 Next Session Plan (DM's intent and plans for the future):
 ${nextSessionPlan || 'No plan provided for the next session.'}

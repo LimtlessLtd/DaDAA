@@ -4,7 +4,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
-const { joinAndListen } = require('./src/voice_manager');
+const { joinAndListen, speakText } = require('./src/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
 const { initializeWorldContext, appendTranscript, readTranscriptLog, buildDmSuggestion, loadSessionState, saveSessionState } = require('./src/context_manager');
 const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai_helper');
@@ -38,6 +38,11 @@ let stats = {
     lastLatencyMs: 0
 };
 
+// --- SILENCE DRIVER VARIABLES ---
+let silenceTimer = null;
+const SILENCE_TIMEOUT_MS = 45000; // 45 seconds of silence before the DM speaks up
+let lastSpeechTimestamp = Date.now();
+
 const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
 
 function saveLlmDebug(debugInfo) {
@@ -52,6 +57,94 @@ function saveLlmDebug(debugInfo) {
 function saveSessionReminders(reminders) {
     fs.mkdirSync(TEMP_DATA_DIR, { recursive: true });
     fs.writeFileSync(SESSION_REMINDERS_PATH, JSON.stringify(reminders, null, 2), 'utf8');
+}
+
+async function handleSilenceDriver() {
+    console.log('-> Sustained silence detected. Prompting DM AI to drive the narrative...');
+    if (!worldContext) return;
+
+    // Treat silence as a "blank" transcript
+    const fakeTranscript = "(Players are silent and awaiting the Dungeon Master's lead)";
+    
+    // UPDATED: No relationships argument
+    const summary = summarizeTranscript(fakeTranscript, worldContext.knowledgeIndex);
+    const sessionState = loadSessionState();
+    let nextSessionPlan = '';
+    const planPath = path.join(TEMP_DATA_DIR, 'next_session_plan.txt');
+    if (fs.existsSync(planPath)) {
+        nextSessionPlan = fs.readFileSync(planPath, 'utf8');
+    }
+    const contextString = `
+Current Scene: ${sessionState.activeScene || 'Unknown'}
+Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
+Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+    `.trim();
+
+    const rollingSummary = getRollingSummary();
+    const characterMapStr = getCharacterMapString();
+    const playerLogsStr = getPlayerLogsString();
+    const prompt = buildPrompt(fakeTranscript, contextString, rollingSummary, characterMapStr, nextSessionPlan, playerLogsStr);
+    
+    const activeModelName = config.LLM || 'Unknown Model';
+
+    saveLlmDebug({
+        timestamp: new Date().toISOString(),
+        model: activeModelName,
+        latencyMs: 0,
+        transcript: "Silence",
+        contextString: contextString,
+        rollingSummary: rollingSummary,
+        fullPrompt: prompt,
+        rawResponse: { reason: "Silence Timeout Triggered" },
+        stats: stats
+    });
+
+    const apiStartTime = Date.now();
+    stats.llmCalls++;
+    
+    try {
+        const aiReply = await callModel(prompt);
+        const latency = Date.now() - apiStartTime;
+        stats.lastLatencyMs = latency;
+        
+        if (aiReply) {
+            console.log(`-> AI Silence evaluation: [Important: ${aiReply.isImportant}] Suggestion: ${aiReply.suggestion || 'None'}`);
+            
+            const isImportantInsight = aiReply.suggestion && !aiReply.isOOC; // Ignore importance flag for silence, force narrative
+            if (isImportantInsight) {
+                stats.importantInsights++;
+                rememberAiInsight(aiReply, "Silence");
+                sendDmToOwner(`DM guidance (Silence Driver):\n${aiReply.suggestion}`);
+                
+                if (aiReply.spokenNarrative) {
+                    console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
+                    speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
+                }
+            }
+
+            if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
+                addCharacterLogs(aiReply.characterLogs);
+            }
+            
+            saveLlmDebug({
+                timestamp: new Date().toISOString(),
+                model: activeModelName,
+                latencyMs: latency,
+                transcript: "Silence",
+                contextString: contextString,
+                rollingSummary: rollingSummary,
+                fullPrompt: prompt,
+                rawResponse: aiReply,
+                stats: stats
+            });
+        }
+    } catch (error) {
+        console.warn('-> Silence Driver AI provider unavailable:', error.message);
+    }
+    
+    // Automatically restart the timer for the next gap of silence
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
 }
 
 async function sendDmToOwner(content) {
@@ -133,6 +226,13 @@ client.on('messageCreate', async (message) => {
                     }
                 }
                 
+                // --- RESET SILENCE TIMER ---
+                lastSpeechTimestamp = Date.now();
+                if (silenceTimer) {
+                    clearTimeout(silenceTimer);
+                }
+                silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
+
                 if (worldContext) {
                     const sessionNotes = loadSessionNotes();
                     const triggered = findTriggeredNotes(sessionNotes, transcript);
@@ -195,6 +295,11 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                                     stats.importantInsights++;
                                     rememberAiInsight(aiReply, transcript);
                                     sendDmToOwner(`DM guidance:\n${aiReply.suggestion}`);
+                                    
+                                    if (aiReply.spokenNarrative) {
+                                        console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
+                                        speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
+                                    }
                                 }
 
                                 if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
@@ -256,6 +361,12 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                 }
             });
             message.reply('Listening to the channel!');
+            
+            // --- START INITIAL SILENCE TIMER ---
+            lastSpeechTimestamp = Date.now();
+            if (silenceTimer) clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
+            
         } else {
             message.reply('You need to be in a voice channel first!');
         }
@@ -267,6 +378,11 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
         if (connection) {
             connection.destroy();
             message.reply('Disconnected from voice channel.');
+            // --- CLEAR SILENCE TIMER ---
+            if (silenceTimer) {
+                clearTimeout(silenceTimer);
+                silenceTimer = null;
+            }
         } else {
             message.reply('I am not in a voice channel.');
         }

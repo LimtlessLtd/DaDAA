@@ -1,7 +1,10 @@
 // src/voice_manager.js
-const { joinVoiceChannel, EndBehaviorType } = require('@discordjs/voice');
+const { joinVoiceChannel, EndBehaviorType, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
 const prism = require('prism-media');
 const WebSocket = require('ws');
+const { execFile } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 
 const socketsByUser = new Map();
 let transcriptHandler = null;
@@ -10,6 +13,12 @@ let transcriptHandler = null;
 const utteranceStartTimes = new Map();
 // Prevent memory leak / multiple subscriptions by keeping track of active streams per user
 const activeStreams = new Map();
+
+// Global audio player for the bot to speak
+const audioPlayer = createAudioPlayer();
+let currentVoiceConnection = null;
+let ttsQueue = [];
+let isPlayingTts = false;
 
 function ensureSocket(userId) {
     if (!userId) return null;
@@ -75,7 +84,18 @@ function joinAndListen(client, guildId, channelId, handler) {
         selfDeaf: false,
     });
 
+    currentVoiceConnection = connection;
+    connection.subscribe(audioPlayer);
+
     connection.receiver.speaking.on('start', (userId) => {
+        // Interruption: If a user starts speaking, stop the AI immediately.
+        if (isPlayingTts) {
+            console.log(`-> Interrupting DM TTS playback due to user ${userId} speaking.`);
+            audioPlayer.stop(); // Stops current playback immediately
+            ttsQueue = []; // Clear any queued sentences
+            isPlayingTts = false;
+        }
+
         // Prevent registering duplicate streams/subscriptions for the same user if they are already speaking
         if (activeStreams.has(userId)) {
             return;
@@ -120,4 +140,58 @@ function joinAndListen(client, guildId, channelId, handler) {
     return connection;
 }
 
-module.exports = { joinAndListen };
+audioPlayer.on(AudioPlayerStatus.Idle, () => {
+    isPlayingTts = false;
+    processTtsQueue();
+});
+
+audioPlayer.on('error', error => {
+    console.error('-> Audio Player Error:', error.message);
+    isPlayingTts = false;
+    processTtsQueue();
+});
+
+function speakText(text, profile = 'narrator') {
+    if (!text || !currentVoiceConnection) return;
+    ttsQueue.push({ text, profile });
+    processTtsQueue();
+}
+
+function processTtsQueue() {
+    if (isPlayingTts || ttsQueue.length === 0 || !currentVoiceConnection) return;
+
+    isPlayingTts = true;
+    const item = ttsQueue.shift();
+    const text = item.text;
+    const profile = item.profile || 'narrator';
+    
+    const tempAudioPath = path.join(__dirname, '..', 'temp_data', 'tts_output.wav');
+    const pythonScript = path.join(__dirname, 'local_tts.py');
+
+    // Make sure the temp directory exists
+    const dataDir = path.dirname(tempAudioPath);
+    if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    // Spawn python script to generate audio
+    execFile('python', [pythonScript, text, tempAudioPath, profile], (error) => {
+        if (error) {
+            console.error('-> TTS Generation Error:', error.message);
+            isPlayingTts = false;
+            processTtsQueue();
+            return;
+        }
+
+        try {
+            const resource = createAudioResource(tempAudioPath);
+            audioPlayer.play(resource);
+        } catch (e) {
+            console.error('-> Audio playback error:', e.message);
+            isPlayingTts = false;
+            processTtsQueue();
+        }
+    });
+}
+
+module.exports = { joinAndListen, speakText };

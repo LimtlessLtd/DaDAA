@@ -45,7 +45,7 @@
     }
     .grid-3 {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr;
       gap: 16px;
       margin-top: 16px;
     }
@@ -163,25 +163,6 @@
         <div class="input-group">
           <button id="generatePlanBtn">Generate plan for next session</button>
           <pre id="sessionPlanDisplay" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; white-space: pre-wrap; margin-top: 8px; max-height: 150px; overflow-y: auto;">Plans will appear here...</pre>
-        </div>
-      </div>
-
-      <!-- Active Scene & NPCs -->
-      <div class="panel">
-        <div class="panel-title">Active Environment</div>
-        <div class="input-group" style="margin-bottom: 12px;">
-          <select id="sceneInput">
-            <option value="">Select Foundry Scene</option>
-          </select>
-          <button id="setSceneBtn">Set Active Scene</button>
-          <div id="currentSceneDisplay" style="margin-top: 4px; font-size: 0.85rem; color: #3b82f6;"></div>
-        </div>
-        <div class="input-group">
-          <select id="npcInput">
-            <option value="">Select Foundry NPC</option>
-          </select>
-          <button id="addNpcBtn">Add Active NPC</button>
-          <div id="activeNpcsList" style="margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px;"></div>
         </div>
       </div>
 
@@ -390,87 +371,9 @@
         if (state.nextSessionPlan) {
           document.getElementById('sessionPlanDisplay').textContent = state.nextSessionPlan;
         }
-        
-        const sceneDisplay = document.getElementById('currentSceneDisplay');
-        if (state.activeScene) {
-          sceneDisplay.innerHTML = `Current: <strong>${escapeHtml(state.activeScene)}</strong> <button style="background: transparent; padding: 0; color: #ef4444; border: none; font-size: 0.75rem; margin-left: 4px; cursor: pointer;" onclick="clearScene()">[Clear]</button>`;
-        } else {
-          sceneDisplay.innerHTML = '<span style="color: #64748b;">No active scene</span>';
-        }
-
-        const npcContainer = document.getElementById('activeNpcsList');
-        if (state.activeNpcs && state.activeNpcs.length > 0) {
-          npcContainer.innerHTML = state.activeNpcs.map(npc => 
-            `<span style="background: #334155; color: #cbd5e1; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; display: flex; align-items: center; gap: 4px;">
-              ${escapeHtml(npc)}
-              <button style="background: transparent; padding: 0; color: #ef4444; border: none; font-size: 0.7rem; cursor: pointer;" onclick="removeNpc('${escapeHtml(npc)}')">x</button>
-            </span>`
-          ).join('');
-        } else {
-          npcContainer.innerHTML = '<span style="color: #64748b; font-size: 0.85rem;">No active NPCs</span>';
-        }
-
       } catch (e) {
         console.warn('Failed to load session state', e);
       }
-    }
-
-    async function setScene() {
-      const scene = document.getElementById('sceneInput').value;
-      if (!scene) return;
-      try {
-        await fetch('/api/session_state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ activeScene: scene })
-        });
-        loadSessionStateData();
-      } catch (err) { alert(err.message); }
-    }
-
-    async function clearScene() {
-      try {
-        await fetch('/api/session_state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ activeScene: null })
-        });
-        loadSessionStateData();
-      } catch (err) { alert(err.message); }
-    }
-
-    async function addNpc() {
-      const npc = document.getElementById('npcInput').value;
-      if (!npc) return;
-      try {
-        const stateRes = await fetch('/api/session_state');
-        const state = await stateRes.json();
-        const npcs = state.activeNpcs || [];
-        if (!npcs.includes(npc)) {
-          npcs.push(npc);
-          await fetch('/api/session_state', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ activeNpcs: npcs })
-          });
-        }
-        loadSessionStateData();
-      } catch (err) { alert(err.message); }
-    }
-
-    async function removeNpc(npc) {
-      try {
-        const stateRes = await fetch('/api/session_state');
-        const state = await stateRes.json();
-        let npcs = state.activeNpcs || [];
-        npcs = npcs.filter(n => n !== npc);
-        await fetch('/api/session_state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ activeNpcs: npcs })
-        });
-        loadSessionStateData();
-      } catch (err) { alert(err.message); }
     }
 
     async function loadCharacterLogs() {
@@ -525,18 +428,6 @@
           actorSelect.innerHTML = '<option value="">Select Foundry Actor</option>' + 
             (entities.characters || []).map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
           if (currentActor) actorSelect.value = currentActor;
-
-          const sceneSelect = document.getElementById('sceneInput');
-          const currentScene = sceneSelect.value;
-          sceneSelect.innerHTML = '<option value="">Select Foundry Scene</option>' + 
-            (entities.scenes || []).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-          if (currentScene) sceneSelect.value = currentScene;
-
-          const npcSelect = document.getElementById('npcInput');
-          const currentNpc = npcSelect.value;
-          npcSelect.innerHTML = '<option value="">Select Foundry NPC</option>' + 
-            (entities.npcs || []).map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
-          if (currentNpc) npcSelect.value = currentNpc;
         }
       } catch (e) {
         console.warn('Failed to populate dropdowns', e);
@@ -661,8 +552,6 @@
 
     document.getElementById('generatePlanBtn').addEventListener('click', generateSessionPlan);
     document.getElementById('bindCharacterBtn').addEventListener('click', bindCharacter);
-    document.getElementById('setSceneBtn').addEventListener('click', setScene);
-    document.getElementById('addNpcBtn').addEventListener('click', addNpc);
     document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
 
     // --- LLM Telemetry & Debug Mode ---
