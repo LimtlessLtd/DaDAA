@@ -5,7 +5,7 @@ const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinAndListen } = require('./src/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
-const { initializeWorldContext, addRelationship, appendTranscript, readTranscriptLog, buildDmSuggestion, loadSessionState, saveSessionState } = require('./src/context_manager');
+const { initializeWorldContext, appendTranscript, readTranscriptLog, buildDmSuggestion, loadSessionState, saveSessionState } = require('./src/context_manager');
 const { rememberSummary, summarizeTranscript, rememberAiInsight } = require('./src/ai_helper');
 const { buildPrompt, callModel } = require('./src/ai_provider');
 const { startWebEditor } = require('./src/web_editor');
@@ -33,15 +33,11 @@ function saveSessionReminders(reminders) {
 }
 
 async function sendDmToOwner(content) {
-    if (!ownerUserId) {
-        return;
-    }
+    if (!ownerUserId) return;
 
     try {
         const user = await client.users.fetch(ownerUserId);
-        if (user) {
-            await user.send(content);
-        }
+        if (user) await user.send(content);
     } catch (error) {
         console.warn('-> Unable to send DM to owner:', error.message);
     }
@@ -93,17 +89,16 @@ client.on('messageCreate', async (message) => {
         const voiceChannel = message.member?.voice?.channel;
         if (voiceChannel) {
             joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript) => {
-                // Resolve a friendly username when possible for clearer UI
                 let sourceLabel = userId;
                 try {
                     const userObj = await client.users.fetch(userId);
                     if (userObj && (userObj.username || userObj.tag)) {
                         sourceLabel = userObj.username || userObj.tag;
                     }
-                } catch (e) {
-                    // fallback to raw id
-                }
+                } catch (e) { /* fallback to id */ }
+                
                 appendTranscript(transcript, sourceLabel);
+                
                 if (worldContext) {
                     const sessionNotes = loadSessionNotes();
                     const triggered = findTriggeredNotes(sessionNotes, transcript);
@@ -114,31 +109,30 @@ client.on('messageCreate', async (message) => {
                         sendDmToOwner(`Session reminder triggered:\n${dmBody}`);
                     }
 
-                    const summary = summarizeTranscript(transcript, worldContext.knowledgeIndex, worldContext.relationships);
-                    // rememberSummary(summary); // We will prioritize rememberAiInsight for importance filtering
+                    // UPDATED: No relationships argument
+                    const summary = summarizeTranscript(transcript, worldContext.knowledgeIndex);
 
                     const sessionState = loadSessionState();
                     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
 Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
-Relationships: ${summary.recentLinks.join('\n') || 'None'}
                     `.trim();
 
                     const prompt = buildPrompt(transcript, contextString);
                     callModel(prompt)
                         .then((aiReply) => {
-                            if (aiReply && aiReply.suggestion) {
-                                console.log(`-> AI DM reply: ${aiReply.suggestion} (Important: ${aiReply.isImportant})`);
-                                rememberAiInsight(aiReply, transcript);
-                                if (aiReply.isImportant) {
+                            if (aiReply) {
+                                // NEW: Log EVERYTHING, even if unimportant, so you know the AI is alive
+                                console.log(`-> AI DM evaluation: [OOC: ${aiReply.isOOC}] [Important: ${aiReply.isImportant}] Suggestion: ${aiReply.suggestion || 'None'}`);
+                                
+                                if (aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant) {
+                                    rememberAiInsight(aiReply, transcript);
                                     sendDmToOwner(`DM guidance:\n${aiReply.suggestion}`);
                                 }
                             }
                         })
                         .catch((error) => console.warn('-> AI provider unavailable:', error.message));
-                    const suggestion = buildDmSuggestion(transcript, worldContext.knowledgeIndex, worldContext.relationships);
-                    console.log(`-> DM suggestion: ${suggestion}`);
                 }
             });
             message.reply('Listening to the channel!');
@@ -159,36 +153,6 @@ Relationships: ${summary.recentLinks.join('\n') || 'None'}
         return;
     }
 
-    if (message.content.startsWith('!link ')) {
-        if (!worldContext) {
-            message.reply('World context has not loaded yet.');
-            return;
-        }
-
-        const parts = message.content.slice(6).split('|').map((part) => part.trim());
-        if (parts.length < 2) {
-            message.reply('Format: !link <source> | <target> [type]');
-            return;
-        }
-
-        const [source, target, type = 'related'] = parts;
-        const sourceRecord = worldContext.knowledgeIndex.records.find((record) =>
-            `${record.category}: ${record.name}`.toLowerCase().includes(source.toLowerCase())
-        );
-        const targetRecord = worldContext.knowledgeIndex.records.find((record) =>
-            `${record.category}: ${record.name}`.toLowerCase().includes(target.toLowerCase())
-        );
-
-        if (!sourceRecord || !targetRecord) {
-            message.reply('I could not resolve those records from the local Foundry data.');
-            return;
-        }
-
-        addRelationship(worldContext.relationships, `${sourceRecord.category}:${sourceRecord.name}`, `${targetRecord.category}:${targetRecord.name}`, type);
-        message.reply(`Linked ${sourceRecord.name} to ${targetRecord.name} as ${type}.`);
-        return;
-    }
-
     if (message.content === '!log') {
         message.reply(`Transcript log:\n${readTranscriptLog() || 'No transcript yet.'}`);
         return;
@@ -204,30 +168,26 @@ Relationships: ${summary.recentLinks.join('\n') || 'None'}
         const latestTranscript = transcriptLog
             .split('\n')
             .filter(Boolean)
-            .slice(-3) // Last 3 lines for better context
+            .slice(-3) 
             .map(line => line.replace(/^\[[^\]]+\]\s+\[[^\]]+\]\s+/, ''))
             .join(' ') || 'No transcript yet.';
 
         const sessionState = loadSessionState();
-        const summary = summarizeTranscript(latestTranscript, worldContext.knowledgeIndex, worldContext.relationships);
+        // UPDATED: No relationships argument
+        const summary = summarizeTranscript(latestTranscript, worldContext.knowledgeIndex);
         
         const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
 Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
-Relationships: ${summary.recentLinks.join('\n') || 'None'}
         `.trim();
 
         const prompt = buildPrompt(latestTranscript, contextString);
         callModel(prompt)
             .then((aiReply) => {
-                const reply = aiReply || summary.advice;
+                const reply = aiReply?.suggestion || summary.advice;
                 message.reply(reply);
                 sendDmToOwner(`Context request:\n${reply}`);
-            })
-            .catch((error) => {
-                message.reply(summary.advice);
-                console.warn('-> AI provider unavailable:', error.message);
             });
         return;
     }

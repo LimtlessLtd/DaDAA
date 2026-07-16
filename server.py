@@ -105,7 +105,7 @@ async def audio_handler(websocket):
                     with torch.no_grad():
                         speech_prob = vad_model(audio_tensor, 16000).item()
 
-                    if speech_prob > 0.3:
+                    if speech_prob > 0.2:
                         audio_buffer.append(frame)
                         consecutive_silence_frames = 0
                     else:

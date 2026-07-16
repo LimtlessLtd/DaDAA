@@ -25,56 +25,36 @@ function saveMemory(memory) {
     fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2));
 }
 
-function summarizeTranscript(transcript, knowledgeIndex, relationships) {
+function summarizeTranscript(transcript, knowledgeIndex) {
     const normalizedTranscript = String(transcript || '').trim();
+    
+    // Lore Scan: Look for matches in name, category, or description
     const relevantRecords = (knowledgeIndex?.records || [])
         .filter((record) => {
-            const haystack = `${record.category} ${record.name}`.toLowerCase();
-            return normalizedTranscript.toLowerCase().split(/\s+/).some((word) => haystack.includes(word) && word.length > 3);
+            const fullText = `${record.category} ${record.name} ${record.description || ''}`.toLowerCase();
+            return normalizedTranscript.toLowerCase().split(/\s+/).some((word) => 
+                word.length > 4 && fullText.includes(word)
+            );
         })
         .slice(0, 5);
 
-    const recentLinks = (relationships || []).slice(-3).map((entry) => `${entry.source} → ${entry.target}`);
-
     return {
-        headline: normalizedTranscript ? normalizedTranscript.slice(0, 120) : 'No transcript captured yet.',
         transcript: normalizedTranscript,
         relevantRecords,
-        recentLinks,
-        advice: buildAdvice(normalizedTranscript, relevantRecords, recentLinks),
+        advice: buildAdvice(normalizedTranscript, relevantRecords),
     };
 }
 
-function buildAdvice(transcript, relevantRecords, recentLinks) {
-    const trimmed = transcript.trim();
-    if (!trimmed) {
-        return 'No speech has been captured yet. Keep listening for the next beat of the session.';
-    }
-
+function buildAdvice(transcript, relevantRecords) {
     const recordHints = relevantRecords.length > 0
-        ? `Relevant known records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join(', ')}`
-        : 'No obvious local record match was found in the current world context.';
+        ? `Foundry Lore Context: ${relevantRecords.map(r => `${r.name}: ${r.description?.slice(0, 100) || 'No description'}`).join(' | ')}`
+        : 'No specific lore found in database.';
 
-    const linkHints = recentLinks.length > 0
-        ? `Recent relationships: ${recentLinks.join('; ')}`
-        : 'No relationships have been saved yet.';
-
-    return `DM guidance: ${trimmed}\n${recordHints}\n${linkHints}\nSuggested next move: ask a clarifying question, foreshadow the next scene beat, or connect the player statement to one of the linked records.`;
-}
-
-function rememberSummary(summary) {
-    const memory = loadMemory();
-    memory.summaries.push({
-        timestamp: new Date().toISOString(),
-        summary,
-    });
-    memory.summaries = memory.summaries.slice(-20);
-    saveMemory(memory);
-    return memory;
+    return `DM Guidance: ${transcript}\n${recordHints}\nSuggested next move: Use the lore context above to improvise the player's interaction.`;
 }
 
 function rememberAiInsight(aiResponse, transcriptChunk) {
-    if (!aiResponse || !aiResponse.isImportant) return null;
+    if (!aiResponse || aiResponse.isOOC || !aiResponse.isImportant) return null;
 
     const memory = loadMemory();
     memory.summaries.push({
@@ -90,9 +70,7 @@ function rememberAiInsight(aiResponse, transcriptChunk) {
 }
 
 module.exports = {
-    buildAdvice,
     loadMemory,
-    rememberSummary,
     summarizeTranscript,
     rememberAiInsight
 };
