@@ -1,4 +1,5 @@
 // index.js
+// Implement as few discord commands as possible, it should mostly be driven by dashboard UI buttons and widgets.
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +11,7 @@ const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSumma
 const { buildPrompt, callModel } = require('./src/ai_provider');
 const { startWebEditor } = require('./src/web_editor');
 const { loadSessionNotes, findTriggeredNotes } = require('./src/session_manager');
+const { bindCharacter, unbindCharacter, getCharacterMapString, addCharacterLogs, loadCharacterLogs, recordDiscordUser, getPlayerLogsString } = require('./src/character_manager');
 const config = require('./config.json');
 
 console.log('-> Starting DaDAA...');
@@ -103,30 +105,6 @@ client.on('messageCreate', async (message) => {
 
     console.log('-> Message received:', message.content);
 
-    if (message.content.startsWith('!scene ')) {
-        const scene = message.content.slice(7).trim();
-        const state = loadSessionState();
-        state.activeScene = scene;
-        saveSessionState(state);
-        message.reply(`Active scene set to: **${scene}**`);
-        return;
-    }
-
-    if (message.content.startsWith('!npc ')) {
-        const npc = message.content.slice(5).trim();
-        const state = loadSessionState();
-        if (!state.activeNpcs) state.activeNpcs = [];
-        if (state.activeNpcs.includes(npc)) {
-            state.activeNpcs = state.activeNpcs.filter(n => n !== npc);
-            message.reply(`Removed **${npc}** from active NPCs.`);
-        } else {
-            state.activeNpcs.push(npc);
-            message.reply(`Added **${npc}** to active NPCs.`);
-        }
-        saveSessionState(state);
-        return;
-    }
-
     if (message.content === '!join') {
         const voiceChannel = message.member?.voice?.channel;
         if (voiceChannel) {
@@ -139,6 +117,7 @@ client.on('messageCreate', async (message) => {
                     }
                 } catch (e) { /* fallback to id */ }
                 
+                recordDiscordUser(sourceLabel);
                 appendTranscript(transcript, sourceLabel, startTime);
                 
                 stats.totalUtterances++;
@@ -168,6 +147,11 @@ client.on('messageCreate', async (message) => {
                     const summary = summarizeTranscript(transcript, worldContext.knowledgeIndex);
 
                     const sessionState = loadSessionState();
+                    let nextSessionPlan = '';
+                    const planPath = path.join(TEMP_DATA_DIR, 'next_session_plan.txt');
+                    if (fs.existsSync(planPath)) {
+                        nextSessionPlan = fs.readFileSync(planPath, 'utf8');
+                    }
                     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
@@ -175,7 +159,9 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                     `.trim();
 
                     const rollingSummary = getRollingSummary();
-                    const prompt = buildPrompt(transcript, contextString, rollingSummary);
+                    const characterMapStr = getCharacterMapString();
+                    const playerLogsStr = getPlayerLogsString();
+                    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, nextSessionPlan, playerLogsStr);
                     
                     const activeModelName = config.LLM || 'Unknown Model';
 
@@ -209,6 +195,10 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                                     stats.importantInsights++;
                                     rememberAiInsight(aiReply, transcript);
                                     sendDmToOwner(`DM guidance:\n${aiReply.suggestion}`);
+                                }
+
+                                if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
+                                    addCharacterLogs(aiReply.characterLogs);
                                 }
                                 
                                 // Save full debug telemetry

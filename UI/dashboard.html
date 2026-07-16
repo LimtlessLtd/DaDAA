@@ -43,8 +43,15 @@
       grid-template-columns: 1fr 1.5fr; 
       gap: 16px; 
     }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 16px;
+      margin-top: 16px;
+    }
     @media(max-width: 768px) { 
       .grid { grid-template-columns: 1fr; } 
+      .grid-3 { grid-template-columns: 1fr; }
     }
     .panel { 
       background: #1e293b; 
@@ -99,6 +106,25 @@
       font-weight: 700; 
       font-size: 0.8rem;
     }
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .input-group input, .input-group textarea {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: white;
+      padding: 8px;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 0.85rem;
+    }
+    .input-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
   </style>
 </head>
 <body>
@@ -126,6 +152,58 @@
         </div>
         <div id="triggerBanner"></div>
         <div id="transcriptLog"></div>
+      </div>
+    </div>
+
+    <!-- Management Row -->
+    <div class="grid-3">
+      <!-- Session Planning -->
+      <div class="panel">
+        <div class="panel-title">Next Session Plan</div>
+        <div class="input-group">
+          <button id="generatePlanBtn">Generate plan for next session</button>
+          <pre id="sessionPlanDisplay" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; white-space: pre-wrap; margin-top: 8px; max-height: 150px; overflow-y: auto;">Plans will appear here...</pre>
+        </div>
+      </div>
+
+      <!-- Active Scene & NPCs -->
+      <div class="panel">
+        <div class="panel-title">Active Environment</div>
+        <div class="input-group" style="margin-bottom: 12px;">
+          <select id="sceneInput">
+            <option value="">Select Foundry Scene</option>
+          </select>
+          <button id="setSceneBtn">Set Active Scene</button>
+          <div id="currentSceneDisplay" style="margin-top: 4px; font-size: 0.85rem; color: #3b82f6;"></div>
+        </div>
+        <div class="input-group">
+          <select id="npcInput">
+            <option value="">Select Foundry NPC</option>
+          </select>
+          <button id="addNpcBtn">Add Active NPC</button>
+          <div id="activeNpcsList" style="margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px;"></div>
+        </div>
+      </div>
+
+      <!-- Character Mapping -->
+      <div class="panel">
+        <div class="panel-title">Character Mapping</div>
+        <div class="input-group">
+          <select id="discordUserInput">
+            <option value="">Select Discord User</option>
+          </select>
+          <select id="characterNameInput">
+            <option value="">Select Foundry Actor</option>
+          </select>
+          <button id="bindCharacterBtn">Bind Character</button>
+        </div>
+        <div id="characterMapList" style="margin-top: 12px; max-height: 150px; overflow-y: auto;"></div>
+      </div>
+
+      <!-- Character Logs -->
+      <div class="panel">
+        <div class="panel-title">Character Logs</div>
+        <div id="characterLogsList" style="max-height: 200px; overflow-y: auto;"></div>
       </div>
     </div>
 
@@ -221,6 +299,250 @@
         .replace(/'/g, '&#39;');
     }
 
+    async function generateSessionPlan() {
+      const btn = document.getElementById('generatePlanBtn');
+      btn.textContent = 'Generating...';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/generate_plan', { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to generate plan');
+        const data = await res.json();
+        document.getElementById('sessionPlanDisplay').textContent = data.plan;
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.textContent = 'Generate plan for next session';
+        btn.disabled = false;
+      }
+    }
+
+    async function bindCharacter() {
+      const discordUser = document.getElementById('discordUserInput').value;
+      const character = document.getElementById('characterNameInput').value;
+      if (!discordUser || !character) {
+        alert('Both fields are required');
+        return;
+      }
+      try {
+        await fetch('/api/character_map', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'bind', discordUser, character })
+        });
+        loadCharacterMap();
+        document.getElementById('discordUserInput').value = '';
+        document.getElementById('characterNameInput').value = '';
+      } catch (err) {
+        alert('Failed to bind character: ' + err.message);
+      }
+    }
+
+    async function unbindCharacter(discordUser, character) {
+      try {
+        await fetch('/api/character_map', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'unbind', discordUser, character })
+        });
+        loadCharacterMap();
+      } catch (err) {
+        alert('Failed to unbind character: ' + err.message);
+      }
+    }
+
+    async function loadCharacterMap() {
+      try {
+        const res = await fetch('/api/character_map');
+        if (!res.ok) return;
+        const map = await res.json();
+        const container = document.getElementById('characterMapList');
+        const entries = Object.entries(map);
+        if (entries.length === 0) {
+          container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem; padding: 4px;">No characters mapped.</div>';
+          return;
+        }
+        
+        let html = '';
+        for (const [user, chars] of entries) {
+            html += `<div class="item">
+              <strong style="color: #3b82f6;">${escapeHtml(user)}</strong>
+              <div style="margin-top: 4px; padding-left: 8px;">`;
+            
+            for (const char of chars) {
+                html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                    <span style="color: #cbd5e1;">${escapeHtml(char)}</span>
+                    <button style="background: #ef4444; padding: 2px 6px; font-size: 0.7rem;" onclick="unbindCharacter('${escapeHtml(user)}', '${escapeHtml(char)}')">Unbind</button>
+                </div>`;
+            }
+            html += `</div></div>`;
+        }
+        container.innerHTML = html;
+      } catch (e) {
+        console.warn('Failed to load character map', e);
+      }
+    }
+
+    async function loadSessionStateData() {
+      try {
+        const res = await fetch('/api/session_state');
+        if (!res.ok) return;
+        const state = await res.json();
+        if (state.nextSessionPlan) {
+          document.getElementById('sessionPlanDisplay').textContent = state.nextSessionPlan;
+        }
+        
+        const sceneDisplay = document.getElementById('currentSceneDisplay');
+        if (state.activeScene) {
+          sceneDisplay.innerHTML = `Current: <strong>${escapeHtml(state.activeScene)}</strong> <button style="background: transparent; padding: 0; color: #ef4444; border: none; font-size: 0.75rem; margin-left: 4px; cursor: pointer;" onclick="clearScene()">[Clear]</button>`;
+        } else {
+          sceneDisplay.innerHTML = '<span style="color: #64748b;">No active scene</span>';
+        }
+
+        const npcContainer = document.getElementById('activeNpcsList');
+        if (state.activeNpcs && state.activeNpcs.length > 0) {
+          npcContainer.innerHTML = state.activeNpcs.map(npc => 
+            `<span style="background: #334155; color: #cbd5e1; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; display: flex; align-items: center; gap: 4px;">
+              ${escapeHtml(npc)}
+              <button style="background: transparent; padding: 0; color: #ef4444; border: none; font-size: 0.7rem; cursor: pointer;" onclick="removeNpc('${escapeHtml(npc)}')">x</button>
+            </span>`
+          ).join('');
+        } else {
+          npcContainer.innerHTML = '<span style="color: #64748b; font-size: 0.85rem;">No active NPCs</span>';
+        }
+
+      } catch (e) {
+        console.warn('Failed to load session state', e);
+      }
+    }
+
+    async function setScene() {
+      const scene = document.getElementById('sceneInput').value;
+      if (!scene) return;
+      try {
+        await fetch('/api/session_state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activeScene: scene })
+        });
+        loadSessionStateData();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function clearScene() {
+      try {
+        await fetch('/api/session_state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activeScene: null })
+        });
+        loadSessionStateData();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function addNpc() {
+      const npc = document.getElementById('npcInput').value;
+      if (!npc) return;
+      try {
+        const stateRes = await fetch('/api/session_state');
+        const state = await stateRes.json();
+        const npcs = state.activeNpcs || [];
+        if (!npcs.includes(npc)) {
+          npcs.push(npc);
+          await fetch('/api/session_state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ activeNpcs: npcs })
+          });
+        }
+        loadSessionStateData();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function removeNpc(npc) {
+      try {
+        const stateRes = await fetch('/api/session_state');
+        const state = await stateRes.json();
+        let npcs = state.activeNpcs || [];
+        npcs = npcs.filter(n => n !== npc);
+        await fetch('/api/session_state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activeNpcs: npcs })
+        });
+        loadSessionStateData();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function loadCharacterLogs() {
+      try {
+        const res = await fetch('/api/character_logs');
+        if (!res.ok) return;
+        const logs = await res.json();
+        const container = document.getElementById('characterLogsList');
+        if (!logs || logs.length === 0) {
+          container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem; padding: 4px;">No logs recorded yet.</div>';
+          return;
+        }
+        
+        container.innerHTML = logs.slice().reverse().map(l => `
+          <div class="item">
+            <div style="font-size: 0.7rem; color: #64748b; display: flex; justify-content: space-between;">
+              <span style="text-transform: uppercase; color: #f59e0b; font-weight: bold;">${escapeHtml(l.type)}</span>
+              <span>${new Date(l.timestamp).toLocaleString()}</span>
+            </div>
+            <div style="margin-top: 4px;">
+              <strong style="color: #3b82f6;">${escapeHtml(l.character)}</strong>: 
+              <span style="color: #cbd5e1; font-size: 0.8rem;">${escapeHtml(l.log)}</span>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.warn('Failed to load character logs', e);
+      }
+    }
+
+    async function populateDropdowns() {
+      try {
+        const [discordRes, entitiesRes] = await Promise.all([
+          fetch('/api/discord_users'),
+          fetch('/api/foundry_entities')
+        ]);
+        
+        if (discordRes.ok) {
+          const users = await discordRes.json();
+          const userSelect = document.getElementById('discordUserInput');
+          const currentVal = userSelect.value;
+          userSelect.innerHTML = '<option value="">Select Discord User</option>' + 
+            users.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
+          if (currentVal) userSelect.value = currentVal;
+        }
+        
+        if (entitiesRes.ok) {
+          const entities = await entitiesRes.json();
+          
+          const actorSelect = document.getElementById('characterNameInput');
+          const currentActor = actorSelect.value;
+          actorSelect.innerHTML = '<option value="">Select Foundry Actor</option>' + 
+            (entities.characters || []).map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+          if (currentActor) actorSelect.value = currentActor;
+
+          const sceneSelect = document.getElementById('sceneInput');
+          const currentScene = sceneSelect.value;
+          sceneSelect.innerHTML = '<option value="">Select Foundry Scene</option>' + 
+            (entities.scenes || []).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+          if (currentScene) sceneSelect.value = currentScene;
+
+          const npcSelect = document.getElementById('npcInput');
+          const currentNpc = npcSelect.value;
+          npcSelect.innerHTML = '<option value="">Select Foundry NPC</option>' + 
+            (entities.npcs || []).map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+          if (currentNpc) npcSelect.value = currentNpc;
+        }
+      } catch (e) {
+        console.warn('Failed to populate dropdowns', e);
+      }
+    }
+
     async function loadData() {
       // 1. Load AI Memory
       try {
@@ -260,6 +582,15 @@
       } catch (e) {
         document.getElementById('transcriptLog').innerHTML = '<div class="item">No live transcript stream found.</div>';
       }
+
+      // 3. Load Session State
+      loadSessionStateData();
+
+      // 4. Load Character Logs
+      loadCharacterLogs();
+
+      // 5. Load Character Map
+      loadCharacterMap();
     }
 
     function renderTranscriptLog(text) {
@@ -328,6 +659,10 @@
       loadData();
     }
 
+    document.getElementById('generatePlanBtn').addEventListener('click', generateSessionPlan);
+    document.getElementById('bindCharacterBtn').addEventListener('click', bindCharacter);
+    document.getElementById('setSceneBtn').addEventListener('click', setScene);
+    document.getElementById('addNpcBtn').addEventListener('click', addNpc);
     document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
 
     // --- LLM Telemetry & Debug Mode ---
@@ -391,13 +726,21 @@
     document.getElementById('debugToggleBtn').addEventListener('click', toggleDebugMode);
 
     // Initial setup
-    loadData();
     setInterval(() => {
       loadData();
       if (debugModeActive) {
         loadDebugData();
       }
     }, 3000); // Polling every 3 seconds for snap response times
+    setInterval(loadCharacterLogs, 5000);
+    setInterval(populateDropdowns, 10000);
+    
+    // Initial fetch
+    loadData();
+    loadCharacterMap();
+    loadSessionStateData();
+    loadCharacterLogs();
+    populateDropdowns();
   </script>
 </body>
 </html>

@@ -1,9 +1,9 @@
 const https = require('https');
 const config = require('../config.json');
 
-function buildPrompt(transcript, context, rollingSummary = '') {
+function buildPrompt(transcript, context, rollingSummary = '', characterMapString = '', nextSessionPlan = '', playerLogsString = '') {
     return `You are the Dungeon Master. You are a creative, narrative-focused Dungeon Master who has a deep understanding of the world and its lore. 
-Your goal is to enhance the session atmosphere, keep players immersed to run a consistent Dungeons and Dragons world.
+Your goal is to enhance the session atmosphere, keep players immersed and to run a consistent Dungeons and Dragons world. You run the world, you decide what NPCs the players encounter, who the NPCs attack, what world events happen. All the things a good Dungeon Master does.
 
 STRICT OUTPUT FORMAT:
 Respond ONLY with a JSON object:
@@ -11,7 +11,14 @@ Respond ONLY with a JSON object:
   "isOOC": true/false,
   "isImportant": true/false,
   "suggestion": "Your 2-4 sentence advice here",
-  "reason": "Why this is important"
+  "reason": "Why this is important",
+  "characterLogs": [
+    {
+      "character": "Character Name",
+      "log": "A brief description of the event, trauma, NPC interaction, or plot point",
+      "type": "trauma | relationship | plot"
+    }
+  ]
 }
 
 GUIDELINES:
@@ -24,9 +31,20 @@ GUIDELINES:
    - When there is a tactical opportunity, threat, combat trigger, or puzzle solution.
    - When the player makes a critical choice that should have immediate environmental or lore consequences.
    Otherwise, set "isImportant" to false so the DM is not distracted by routine roleplay or basic descriptions.
+5. Character Logs: If the transcript contains a major character development, traumatic experience, notable NPC interaction, or major plot event for a player character, log it in "characterLogs". Leave it as an empty array [] if nothing major happened to a character in this transcript segment. Use the Discord User to Character Map to understand which character is acting based on the speaker.
+6. DM Intent & Planning: Use the "Next Session Plan" to guide your suggestions and reactions to help the DM subtly steer or prepare the players for their planned upcoming events.
+
+Next Session Plan (DM's intent and plans for the future):
+${nextSessionPlan || 'No plan provided for the next session.'}
 
 Short-Term Session Memory (Rolling Summary of previous key events):
 ${rollingSummary || 'No major events have occurred yet in this session.'}
+
+Discord User to Character Map:
+${characterMapString || 'No players mapped yet.'}
+
+Player Logs (Meta actions by players):
+${playerLogsString || 'No player actions logged.'}
 
 World Context:
 ${context}
@@ -197,4 +215,57 @@ function requestJson(url, headers, body) {
     });
 }
 
-module.exports = { buildPrompt, callModel };
+function generateNextSessionPlan(rollingSummary, transcriptLog) {
+    const prompt = `You are an expert Dungeon Master assistant. Based on the session's rolling summary and recent transcript log, generate a concise plan for the next session. This plan will guide the DM and the AI in preparing and providing suggestions next time.
+
+Rolling Summary:
+${rollingSummary || 'No major events recorded.'}
+
+Recent Transcript Log:
+${transcriptLog || 'No transcript available.'}
+
+Generate a short bulleted list of plans, unresolved threads, and likely upcoming encounters. Do NOT wrap in JSON, just output the plan as plain text.`;
+
+    const modelName = String(config.LLM || '').toLowerCase();
+    let provider = 'openai';
+
+    if (modelName.includes('gemini')) {
+        provider = 'gemini';
+    } else if (modelName.includes('claude')) {
+        provider = 'anthropic';
+    } else if (modelName.includes('gpt') || modelName.includes('o1')) {
+        provider = 'openai';
+    } else {
+        provider = process.env.AI_PROVIDER || 'openai';
+    }
+
+    let apiKey = null;
+    if (provider === 'gemini') {
+        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    } else if (provider === 'anthropic') {
+        apiKey = process.env.ANTHROPIC_API_KEY;
+    } else {
+        apiKey = process.env.OPENAI_API_KEY;
+    }
+
+    if (!apiKey) {
+        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+    }
+
+    if (!apiKey) {
+        console.warn('-> AI Provider: No API key found in .env');
+        return Promise.resolve('No API key configured.');
+    }
+
+    if (provider === 'gemini') {
+        return callGemini(apiKey, prompt);
+    }
+
+    if (provider === 'anthropic') {
+        return callAnthropic(apiKey, prompt);
+    }
+
+    return callOpenAI(apiKey, prompt);
+}
+
+module.exports = { buildPrompt, callModel, generateNextSessionPlan };

@@ -2,8 +2,11 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { getAllWorldData } = require('./data_manager');
-const { buildKnowledgeIndex, loadRelationships, saveRelationships, addRelationship, initializeWorldContext, migrateRelationships, loadSessionState, saveSessionState } = require('./context_manager');
+const { buildKnowledgeIndex, loadRelationships, saveRelationships, addRelationship, initializeWorldContext, migrateRelationships, loadSessionState, saveSessionState, readTranscriptLog } = require('./context_manager');
 const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote } = require('./session_manager');
+const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('./character_manager');
+const { getRollingSummary } = require('./ai_helper');
+const { generateNextSessionPlan } = require('./ai_provider');
 
 const UI_ROOT = path.join(__dirname, '..', 'UI');
 const TEMP_DATA_ROOT = path.join(__dirname, '..', 'temp_data');
@@ -109,13 +112,20 @@ function startWebEditor() {
 
         if (pathname === '/api/session_state') {
             if (req.method === 'GET') {
-                sendJson(res, 200, loadSessionState());
+                const state = loadSessionState();
+                const planPath = path.join(TEMP_DATA_ROOT, 'next_session_plan.txt');
+                if (fs.existsSync(planPath)) {
+                    state.nextSessionPlan = fs.readFileSync(planPath, 'utf8');
+                }
+                sendJson(res, 200, state);
                 return;
             }
             if (req.method === 'POST') {
                 try {
                     const payload = await readJsonBody(req);
-                    saveSessionState(payload);
+                    const currentState = loadSessionState();
+                    const newState = { ...currentState, ...payload };
+                    saveSessionState(newState);
                     sendJson(res, 200, { ok: true });
                 } catch (err) {
                     sendJson(res, 400, { error: err.message });
@@ -338,6 +348,91 @@ function startWebEditor() {
                 } else {
                     sendJson(res, 404, { error: 'Relationship not found' });
                 }
+                return;
+            }
+        }
+
+        if (pathname === '/api/discord_users') {
+            if (req.method === 'GET') {
+                sendJson(res, 200, loadSeenDiscordUsers());
+                return;
+            }
+        }
+
+        if (pathname === '/api/foundry_entities') {
+            if (req.method === 'GET') {
+                const worldData = await getAllWorldData();
+                
+                const actors = worldData.actors || [];
+                
+                // Filter player characters
+                const characters = actors.filter(a => a.type === 'character' || a.type === 'Player').map(a => a.name).filter(Boolean);
+                const resultCharacters = characters.length > 0 ? characters : actors.map(a => a.name).filter(Boolean);
+                
+                // Filter scenes
+                const scenes = (worldData.scenes || []).map(s => s.name).filter(Boolean);
+                
+                // Filter NPCs
+                const npcs = actors.filter(a => a.type === 'npc' || a.type === 'NonPlayerCharacter').map(a => a.name).filter(Boolean);
+                const resultNpcs = npcs.length > 0 ? npcs : actors.map(a => a.name).filter(Boolean);
+
+                sendJson(res, 200, {
+                    characters: resultCharacters,
+                    scenes: scenes,
+                    npcs: resultNpcs
+                });
+                return;
+            }
+        }
+
+        if (pathname === '/api/generate_plan') {
+            if (req.method === 'POST') {
+                try {
+                    const rollingSummary = getRollingSummary();
+                    // Grab the last ~100 lines of transcript
+                    const log = readTranscriptLog();
+                    const logLines = log.split('\n').filter(Boolean).slice(-100).join('\n');
+                    
+                    const planText = await generateNextSessionPlan(rollingSummary, logLines);
+                    
+                    if (planText) {
+                        const planPath = path.join(TEMP_DATA_ROOT, 'next_session_plan.txt');
+                        fs.writeFileSync(planPath, planText, 'utf8');
+                        sendJson(res, 200, { plan: planText });
+                    } else {
+                        sendJson(res, 400, { error: 'Failed to generate plan.' });
+                    }
+                } catch (err) {
+                    sendJson(res, 500, { error: err.message });
+                }
+                return;
+            }
+        }
+
+        if (pathname === '/api/character_map') {
+            if (req.method === 'GET') {
+                sendJson(res, 200, loadCharacterMap());
+                return;
+            }
+            if (req.method === 'POST') {
+                try {
+                    const payload = await readJsonBody(req);
+                    if (payload.action === 'bind') {
+                        bindCharacter(payload.discordUser, payload.character);
+                    } else if (payload.action === 'unbind') {
+                        unbindCharacter(payload.discordUser, payload.character);
+                    }
+                    sendJson(res, 200, loadCharacterMap());
+                } catch (err) {
+                    sendJson(res, 400, { error: err.message });
+                }
+                return;
+            }
+        }
+
+        if (pathname === '/api/character_logs') {
+            if (req.method === 'GET') {
+                sendJson(res, 200, loadCharacterLogs());
                 return;
             }
         }
