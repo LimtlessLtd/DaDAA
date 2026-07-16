@@ -5,6 +5,7 @@ import numpy as np
 import websockets
 import torch
 from faster_whisper import WhisperModel
+from scipy import signal
 
 # Load Silero VAD model
 vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False)
@@ -22,9 +23,11 @@ def normalize_audio(samples):
     if samples.size == 0:
         return samples
     peak = np.max(np.abs(samples))
-    if peak > 0:
-        return samples / peak
-    return samples
+    # If the whole clip is extremely quiet, do NOT normalize it.
+    # Unconditional normalization of silent clips scales mic hum/noise to 100%, causing Whisper hallucinations.
+    if peak < 0.015:
+        return samples
+    return samples / peak * 0.9
 
 def resample_to_16k(samples, source_rate=48000, target_rate=16000):
     if source_rate == target_rate or samples.size == 0:
@@ -32,10 +35,23 @@ def resample_to_16k(samples, source_rate=48000, target_rate=16000):
     step = source_rate // target_rate
     if source_rate % target_rate != 0:
         return samples
-    return samples[::step]
+    try:
+        # decimate applies a low-pass Chebyshev anti-aliasing filter before downsampling
+        return signal.decimate(samples, step, ftype='iir')
+    except Exception:
+        # Fallback to simple slicing if decimate fails
+        return samples[::step]
 
 def run_transcription(full_audio):
-    segments, _ = model.transcribe(full_audio, beam_size=1, condition_on_previous_text=False)
+    # Guide spelling of fantasy nouns and gaming terms with a helpful initial prompt
+    initial_prompt = "D&D, Dungeons and Dragons, RPG, tabletop, Dungeon Master, DM, Foundry VTT, spell, dice roll, d20, combat."
+    segments, _ = model.transcribe(
+        full_audio,
+        beam_size=3,                 # Excellent sweet spot of speed and accuracy
+        language="en",               # Force English to avoid false-language detection on fantasy names
+        initial_prompt=initial_prompt,
+        condition_on_previous_text=False
+    )
     return ' '.join(segment.text.strip() for segment in segments if segment.text and segment.text.strip())
 
 async def audio_handler(websocket):
@@ -50,9 +66,10 @@ async def audio_handler(websocket):
     
     # Tuning Constants
     CHUNK_SIZE = 512              # 32ms at 16kHz
-    SILENCE_LIMIT_FRAMES = 25     # 25 * 32ms = 800ms of room silence before transcribing
+    SILENCE_LIMIT_FRAMES = 35     # 35 * 32ms = 1120ms of continuous silence before transcribing
     MIN_SPEECH_FRAMES = 10        # 10 * 32ms = 320ms of speech minimum to prevent static/mic bumps
-    TIMEOUT_SECONDS = 0.8         # 800ms of packet absence before triggering fallback transcription
+    TIMEOUT_SECONDS = 1.0         # 1 second of packet absence before triggering fallback transcription
+    VAD_THRESHOLD = 0.4           # Standard threshold for Silero VAD to ignore minor background hiss
 
     try:
         while True:
@@ -105,7 +122,7 @@ async def audio_handler(websocket):
                     with torch.no_grad():
                         speech_prob = vad_model(audio_tensor, 16000).item()
 
-                    if speech_prob > 0.2:
+                    if speech_prob > VAD_THRESHOLD:
                         audio_buffer.append(frame)
                         consecutive_silence_frames = 0
                     else:

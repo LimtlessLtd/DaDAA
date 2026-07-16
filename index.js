@@ -6,7 +6,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const { joinAndListen } = require('./src/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
 const { initializeWorldContext, appendTranscript, readTranscriptLog, buildDmSuggestion, loadSessionState, saveSessionState } = require('./src/context_manager');
-const { rememberSummary, summarizeTranscript, rememberAiInsight } = require('./src/ai_helper');
+const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai_helper');
 const { buildPrompt, callModel } = require('./src/ai_provider');
 const { startWebEditor } = require('./src/web_editor');
 const { loadSessionNotes, findTriggeredNotes } = require('./src/session_manager');
@@ -26,6 +26,25 @@ let worldContext = null;
 let ownerUserId = process.env.BOT_OWNER_ID || null;
 const TEMP_DATA_DIR = path.join(__dirname, 'temp_data');
 const SESSION_REMINDERS_PATH = path.join(TEMP_DATA_DIR, 'session_reminders.json');
+let transcriptCounter = 0;
+
+let stats = {
+    totalUtterances: 0,
+    llmCalls: 0,
+    importantInsights: 0,
+    lastLatencyMs: 0
+};
+
+const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
+
+function saveLlmDebug(debugInfo) {
+    try {
+        fs.mkdirSync(TEMP_DATA_DIR, { recursive: true });
+        fs.writeFileSync(LLM_DEBUG_PATH, JSON.stringify(debugInfo, null, 2), 'utf8');
+    } catch (e) {
+        console.warn('-> Failed to save LLM debug info:', e.message);
+    }
+}
 
 function saveSessionReminders(reminders) {
     fs.mkdirSync(TEMP_DATA_DIR, { recursive: true });
@@ -88,7 +107,7 @@ client.on('messageCreate', async (message) => {
     if (message.content === '!join') {
         const voiceChannel = message.member?.voice?.channel;
         if (voiceChannel) {
-            joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript) => {
+            joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript, startTime) => {
                 let sourceLabel = userId;
                 try {
                     const userObj = await client.users.fetch(userId);
@@ -97,7 +116,20 @@ client.on('messageCreate', async (message) => {
                     }
                 } catch (e) { /* fallback to id */ }
                 
-                appendTranscript(transcript, sourceLabel);
+                appendTranscript(transcript, sourceLabel, startTime);
+                
+                stats.totalUtterances++;
+                
+                // Every 10 voice transcriptions, trigger a background update of the rolling session summary.
+                transcriptCounter++;
+                if (transcriptCounter >= 10) {
+                    transcriptCounter = 0;
+                    const log = readTranscriptLog();
+                    const logLines = log.split('\n').filter(Boolean).slice(-15);
+                    if (logLines.length > 0) {
+                        updateRollingSummary(logLines).catch(err => console.warn('-> Rolling summary error:', err.message));
+                    }
+                }
                 
                 if (worldContext) {
                     const sessionNotes = loadSessionNotes();
@@ -119,17 +151,40 @@ Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
 Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
                     `.trim();
 
-                    const prompt = buildPrompt(transcript, contextString);
+                    const rollingSummary = getRollingSummary();
+                    const prompt = buildPrompt(transcript, contextString, rollingSummary);
+                    
+                    const apiStartTime = Date.now();
+                    stats.llmCalls++;
+                    
                     callModel(prompt)
                         .then((aiReply) => {
+                            const latency = Date.now() - apiStartTime;
+                            stats.lastLatencyMs = latency;
+                            
                             if (aiReply) {
                                 // NEW: Log EVERYTHING, even if unimportant, so you know the AI is alive
                                 console.log(`-> AI DM evaluation: [OOC: ${aiReply.isOOC}] [Important: ${aiReply.isImportant}] Suggestion: ${aiReply.suggestion || 'None'}`);
                                 
-                                if (aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant) {
+                                const isImportantInsight = aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant;
+                                if (isImportantInsight) {
+                                    stats.importantInsights++;
                                     rememberAiInsight(aiReply, transcript);
                                     sendDmToOwner(`DM guidance:\n${aiReply.suggestion}`);
                                 }
+                                
+                                // Save full debug telemetry
+                                saveLlmDebug({
+                                    timestamp: new Date().toISOString(),
+                                    model: process.env.AI_PROVIDER === 'anthropic' ? (process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest') : (process.env.OPENAI_MODEL || 'gpt-4o-mini'),
+                                    latencyMs: latency,
+                                    transcript: transcript,
+                                    contextString: contextString,
+                                    rollingSummary: rollingSummary,
+                                    fullPrompt: prompt,
+                                    rawResponse: aiReply,
+                                    stats: stats
+                                });
                             }
                         })
                         .catch((error) => console.warn('-> AI provider unavailable:', error.message));
@@ -182,7 +237,8 @@ Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
 Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
         `.trim();
 
-        const prompt = buildPrompt(latestTranscript, contextString);
+        const rollingSummary = getRollingSummary();
+        const prompt = buildPrompt(latestTranscript, contextString, rollingSummary);
         callModel(prompt)
             .then((aiReply) => {
                 const reply = aiReply?.suggestion || summary.advice;

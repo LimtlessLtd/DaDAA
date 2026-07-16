@@ -105,7 +105,10 @@
   <div class="container">
     <header>
       <h1>DaDAA Dashboard</h1>
-      <div id="status" class="status-badge">Status: Ready</div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <button id="debugToggleBtn" style="background: #475569; font-size: 0.75rem; padding: 4px 8px;">Show Debug Mode</button>
+        <div id="status" class="status-badge">Status: Ready</div>
+      </div>
     </header>
 
     <div class="grid">
@@ -125,13 +128,70 @@
         <div id="transcriptLog"></div>
       </div>
     </div>
+
+    <!-- Debug & Cognitive Telemetry Console -->
+    <div id="debugPanel" class="panel" style="margin-top: 16px; display: none;">
+      <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; margin-bottom: 12px; padding-bottom: 6px;">
+        <span style="color: #cbd5e1; font-weight: bold; font-size: 0.85rem; text-transform: uppercase;">LLM Cognitive Telemetry & Debug Console</span>
+        <span style="font-size: 0.75rem; text-transform: none; color: #64748b;" id="debugLastUpdated">Never updated</span>
+      </div>
+      
+      <!-- Telemetry Cards -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px;">
+        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Active Model</div>
+          <div style="font-size: 0.95rem; font-weight: 700; color: #3b82f6; margin-top: 4px;" id="telemetryModel">-</div>
+        </div>
+        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Last API Latency</div>
+          <div style="font-size: 0.95rem; font-weight: 700; color: #10b981; margin-top: 4px;" id="telemetryLatency">-</div>
+        </div>
+        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Spoken Utterances</div>
+          <div style="font-size: 0.95rem; font-weight: 700; color: #f59e0b; margin-top: 4px;" id="telemetryUtterances">-</div>
+        </div>
+        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">LLM Queries / Insights</div>
+          <div style="font-size: 0.95rem; font-weight: 700; color: #8b5cf6; margin-top: 4px;" id="telemetryQueries">-</div>
+        </div>
+      </div>
+
+      <!-- Cognitive Breakdown -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 16px;">
+        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155;">
+          <strong style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Last Evaluated Transcript</strong>
+          <div style="font-size: 0.8rem; color: #f8fafc; font-style: italic; line-height: 1.4;" id="debugTranscript">None evaluated yet</div>
+        </div>
+        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155;">
+          <strong style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Evaluated Decision Reasons</strong>
+          <div style="font-size: 0.8rem; color: #fef3c7; line-height: 1.4;" id="debugReason">No evaluations yet</div>
+        </div>
+      </div>
+
+      <!-- Collapsable raw prompts and responses -->
+      <div style="margin-bottom: 8px;">
+        <button class="debug-collapse-btn" onclick="toggleDebugAccordion('debugPromptSection')" style="background: #334155; width: 100%; text-align: left; display: flex; justify-content: space-between; border-radius: 6px; padding: 8px 12px; font-size: 0.8rem; border: none; font-weight: 600; color: #cbd5e1;">
+          <span>Show Full Context &amp; Injected Prompt</span>
+          <span id="debugPromptSectionIcon">▼</span>
+        </button>
+        <pre id="debugPromptSection" style="display: none; background: #0f172a; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; margin-top: 8px; color: #94a3b8; max-height: 250px; overflow-y: auto;"></pre>
+      </div>
+
+      <div>
+        <button class="debug-collapse-btn" onclick="toggleDebugAccordion('debugResponseSection')" style="background: #334155; width: 100%; text-align: left; display: flex; justify-content: space-between; border-radius: 6px; padding: 8px 12px; font-size: 0.8rem; border: none; font-weight: 600; color: #cbd5e1;">
+          <span>Show Raw Structured LLM Response</span>
+          <span id="debugResponseSectionIcon">▼</span>
+        </button>
+        <pre id="debugResponseSection" style="display: none; background: #0f172a; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; margin-top: 8px; color: #10b981; max-height: 200px; overflow-y: auto;"></pre>
+      </div>
+    </div>
   </div>
 
   <script>
     const speakerColors = ['#3b82f6', '#10b981', '#f59e0b', '#f97316', '#8b5cf6', '#ec4899', '#14b8a6'];
     const speakerColorMap = {};
     let transcriptFullView = false;
-    const transcriptPreviewLines = 20;
+    const transcriptPreviewLines = 5;
 
     function getSpeakerColor(source) {
       if (!speakerColorMap[source]) {
@@ -212,6 +272,9 @@
         return;
       }
 
+      // Sort lines chronologically based on their ISO timestamp [YYYY-MM-DD...]
+      lines.sort((a, b) => a.localeCompare(b));
+
       lines = lines.reverse();
       if (!transcriptFullView) {
         lines = lines.slice(0, transcriptPreviewLines);
@@ -267,9 +330,74 @@
 
     document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
 
+    // --- LLM Telemetry & Debug Mode ---
+    let debugModeActive = false;
+
+    async function loadDebugData() {
+      if (!debugModeActive) return;
+      try {
+        const debug = await fetch('/temp_data/llm_debug.json').then((r) => r.json());
+        if (debug) {
+          document.getElementById('debugLastUpdated').innerText = 'Last updated: ' + new Date(debug.timestamp).toLocaleTimeString();
+          document.getElementById('telemetryModel').innerText = String(debug.model || 'Unknown');
+          document.getElementById('telemetryLatency').innerText = String(debug.latencyMs || 0) + ' ms';
+          
+          if (debug.stats) {
+            document.getElementById('telemetryUtterances').innerText = String(debug.stats.totalUtterances || 0);
+            document.getElementById('telemetryQueries').innerText = `${debug.stats.llmCalls || 0} / ${debug.stats.importantInsights || 0}`;
+          }
+
+          document.getElementById('debugTranscript').innerText = debug.transcript ? `"${debug.transcript}"` : 'None';
+          
+          const rawResponse = debug.rawResponse || {};
+          document.getElementById('debugReason').innerText = rawResponse.reason || 'None provided by the model';
+          
+          document.getElementById('debugPromptSection').innerText = String(debug.fullPrompt || 'No prompt stored');
+          document.getElementById('debugResponseSection').innerText = JSON.stringify(rawResponse, null, 2);
+        }
+      } catch (e) {
+        // file doesn't exist yet, ignore silently
+      }
+    }
+
+    function toggleDebugMode() {
+      debugModeActive = !debugModeActive;
+      const debugPanel = document.getElementById('debugPanel');
+      const btn = document.getElementById('debugToggleBtn');
+      if (debugModeActive) {
+        debugPanel.style.display = 'block';
+        btn.innerText = 'Hide Debug Mode';
+        btn.style.background = '#ef4444'; // Red highlighting when active
+        loadDebugData();
+      } else {
+        debugPanel.style.display = 'none';
+        btn.innerText = 'Show Debug Mode';
+        btn.style.background = '#475569';
+      }
+    }
+
+    function toggleDebugAccordion(id) {
+      const el = document.getElementById(id);
+      const icon = document.getElementById(id + 'Icon');
+      if (el.style.display === 'none') {
+        el.style.display = 'block';
+        icon.innerText = '▲';
+      } else {
+        el.style.display = 'none';
+        icon.innerText = '▼';
+      }
+    }
+
+    document.getElementById('debugToggleBtn').addEventListener('click', toggleDebugMode);
+
     // Initial setup
     loadData();
-    setInterval(loadData, 3000); // Polling every 3 seconds for snap response times
+    setInterval(() => {
+      loadData();
+      if (debugModeActive) {
+        loadDebugData();
+      }
+    }, 3000); // Polling every 3 seconds for snap response times
   </script>
 </body>
 </html>

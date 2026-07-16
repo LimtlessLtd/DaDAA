@@ -6,6 +6,11 @@ const WebSocket = require('ws');
 const socketsByUser = new Map();
 let transcriptHandler = null;
 
+// Track utterance start times per user to solve overlapping speech order issues
+const utteranceStartTimes = new Map();
+// Prevent memory leak / multiple subscriptions by keeping track of active streams per user
+const activeStreams = new Map();
+
 function ensureSocket(userId) {
     if (!userId) return null;
     const existing = socketsByUser.get(userId);
@@ -47,7 +52,10 @@ function ensureSocket(userId) {
         try {
             const payload = JSON.parse(message.toString());
             if (transcriptHandler && payload.text) {
-                transcriptHandler(payload.userId || userId, payload.text);
+                // Get the start timestamp of this transcription from the queue
+                const userTimes = utteranceStartTimes.get(payload.userId || userId) || [];
+                const startTime = userTimes.shift() || Date.now();
+                transcriptHandler(payload.userId || userId, payload.text, startTime);
             }
         } catch (error) {
             console.error('-> Failed to parse transcription payload:', error.message);
@@ -68,17 +76,44 @@ function joinAndListen(client, guildId, channelId, handler) {
     });
 
     connection.receiver.speaking.on('start', (userId) => {
+        // Prevent registering duplicate streams/subscriptions for the same user if they are already speaking
+        if (activeStreams.has(userId)) {
+            return;
+        }
+
         const socket = ensureSocket(userId);
+        
+        // Record the start timestamp of this specific speech segment
+        if (!utteranceStartTimes.has(userId)) {
+            utteranceStartTimes.set(userId, []);
+        }
+        utteranceStartTimes.get(userId).push(Date.now());
+
         const audioStream = connection.receiver.subscribe(userId, {
             end: { behavior: EndBehaviorType.AfterSilence, duration: 1000 },
         });
+        activeStreams.set(userId, audioStream);
 
         const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 1, frameSize: 960 });
+
+        // Safely catch subscription errors to prevent crashes on network drops
+        audioStream.on('error', (err) => {
+            console.warn(`-> Audio stream error for user ${userId}:`, err.message);
+        });
+
+        // Safely catch decoder errors to prevent crashes on corrupted/malformed voice packets
+        opusDecoder.on('error', (err) => {
+            console.warn(`-> Opus decoder error for user ${userId} (corrupted packet discarded):`, err.message);
+        });
 
         audioStream.pipe(opusDecoder).on('data', (chunk) => {
             if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(chunk);
             }
+        });
+
+        audioStream.on('end', () => {
+            activeStreams.delete(userId);
         });
     });
 

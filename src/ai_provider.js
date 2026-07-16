@@ -1,6 +1,6 @@
 const https = require('https');
 
-function buildPrompt(transcript, context) {
+function buildPrompt(transcript, context, rollingSummary = '') {
     return `You are the Dungeon Master. You are a creative, narrative-focused Dungeon Master who has a deep understanding of the world and its lore. 
 Your goal is to enhance the session atmosphere, keep players immersed to run a consistent Dungeons and Dragons world.
 
@@ -16,7 +16,16 @@ Respond ONLY with a JSON object:
 GUIDELINES:
 1. Lore Deep-Dive: If the World Context contains major figures (Gods, important NPCs, legendary items or locations), prioritize mentioning them. 
 2. Narrative Hooks: If a God or major lore entity is mentioned, provide a specific, atmospheric reaction or a potential consequence (e.g., "The air grows hot," or "A local priest notices this blasphemy").
-3. is Out Of Character (OOC): Ignore table talk, but be active if the conversation is lore-heavy.
+3. is Out Of Character (OOC): Set "isOOC" to true if the live transcript contains purely real-world discussion, rule disputes, jokes, side talk, food orders, or mechanical banter that does not progress the in-game scene or lore.
+4. isImportant (The Critical Importance Filter): Set "isImportant" to true ONLY under the following high-stakes triggers:
+   - When players are asking or doing something that requires a skill check (Athletics, Arcana, Stealth, etc.).
+   - When players mention or interact with major local lore objects, gods, relics, active scenes, or active NPCs provided in the context.
+   - When there is a tactical opportunity, threat, combat trigger, or puzzle solution.
+   - When the player makes a critical choice that should have immediate environmental or lore consequences.
+   Otherwise, set "isImportant" to false so the DM is not distracted by routine roleplay or basic descriptions.
+
+Short-Term Session Memory (Rolling Summary of previous key events):
+${rollingSummary || 'No major events have occurred yet in this session.'}
 
 World Context:
 ${context}

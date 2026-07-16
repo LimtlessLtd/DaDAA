@@ -35,6 +35,48 @@ function normalizeText(value = '') {
         .trim();
 }
 
+function stripHtml(html = '') {
+    return String(html)
+        .replace(/<[^>]+>/g, ' ') // Replace tags with space
+        .replace(/\s+/g, ' ')     // Normalize whitespace
+        .trim();
+}
+
+function extractDescription(record) {
+    if (!record) return '';
+    
+    // 1. Journal entries with pages
+    if (Array.isArray(record.pages)) {
+        const pageTexts = record.pages
+            .map(p => {
+                const textVal = p.text?.content || p.system?.description?.value || '';
+                return stripHtml(textVal);
+            })
+            .filter(Boolean);
+        if (pageTexts.length > 0) return pageTexts.join('\n');
+    }
+    
+    // 2. Equipment / Spells / Items
+    if (record.system?.description?.value) {
+        return stripHtml(record.system.description.value);
+    }
+    
+    // 3. Actors / NPCs (biography / notes)
+    if (record.system?.details?.biography?.value) {
+        return stripHtml(record.system.details.biography.value);
+    }
+    if (record.system?.details?.publicNotes) {
+        return stripHtml(record.system.details.publicNotes);
+    }
+    
+    // 4. General fallbacks
+    if (record.description) return stripHtml(record.description);
+    if (record.content) return stripHtml(record.content);
+    if (record.text) return stripHtml(record.text);
+    
+    return '';
+}
+
 function buildKnowledgeIndex(worldData = {}) {
     const index = {
         byId: new Map(),
@@ -48,7 +90,8 @@ function buildKnowledgeIndex(worldData = {}) {
             if (!record || !record._id) return;
 
             const name = record.name || record.title || record.label || record._id;
-            const entry = { ...record, category, name };
+            const description = extractDescription(record);
+            const entry = { ...record, category, name, description };
 
             index.records.push(entry);
             index.byId.set(record._id, entry);
@@ -187,9 +230,9 @@ function migrateRelationships(knowledgeIndex) {
     return { relationships, migrated: changed };
 }
 
-function appendTranscript(text, source = 'discord') {
+function appendTranscript(text, source = 'discord', customTimestamp = null) {
     ensureDataDirectories();
-    const now = new Date();
+    const now = customTimestamp ? new Date(customTimestamp) : new Date();
     const timestamp = now.toISOString();
     // Attempt to merge with last line if same source and recent
     let merged = false;
@@ -306,4 +349,6 @@ module.exports = {
     migrateRelationships,
     loadSessionState,
     saveSessionState,
+    stripHtml,
+    extractDescription,
 };
