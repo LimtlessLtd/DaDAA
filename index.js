@@ -177,11 +177,7 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                     const rollingSummary = getRollingSummary();
                     const prompt = buildPrompt(transcript, contextString, rollingSummary);
                     
-                    const activeModelName = process.env.AI_PROVIDER === 'gemini'
-                        ? (process.env.GEMINI_MODEL || 'gemini-1.5-flash')
-                        : (process.env.AI_PROVIDER === 'anthropic'
-                            ? (process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest')
-                            : (process.env.OPENAI_MODEL || 'gpt-4o-mini'));
+                    const activeModelName = config.LLM || 'Unknown Model';
 
                     // Immediately write "Analyzing..." status so the user knows the AI is actively thinking!
                     saveLlmDebug({

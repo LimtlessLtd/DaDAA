@@ -36,8 +36,31 @@ Live Transcript:
 }
 
 function callModel(prompt) {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
-    const provider = process.env.AI_PROVIDER || ((process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) ? 'gemini' : 'openai');
+    const modelName = String(config.LLM || '').toLowerCase();
+    let provider = 'openai';
+
+    if (modelName.includes('gemini')) {
+        provider = 'gemini';
+    } else if (modelName.includes('claude')) {
+        provider = 'anthropic';
+    } else if (modelName.includes('gpt') || modelName.includes('o1')) {
+        provider = 'openai';
+    } else {
+        provider = process.env.AI_PROVIDER || 'openai';
+    }
+
+    let apiKey = null;
+    if (provider === 'gemini') {
+        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    } else if (provider === 'anthropic') {
+        apiKey = process.env.ANTHROPIC_API_KEY;
+    } else {
+        apiKey = process.env.OPENAI_API_KEY;
+    }
+
+    if (!apiKey) {
+        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+    }
 
     if (!apiKey) {
         console.warn('-> AI Provider: No API key found in .env');
@@ -62,7 +85,11 @@ function callModel(prompt) {
 }
 
 function callGemini(apiKey, prompt) {
-    const model = config.LLM;
+    // Sanitize any typographic en-dashes (–) or em-dashes (—) into standard hyphens (-)
+    const model = String(config.LLM || 'gemini-1.5-flash')
+        .replace(/[\u2013\u2014]/g, '-')
+        .trim();
+
     const body = JSON.stringify({
         contents: [{
             parts: [{
@@ -92,8 +119,9 @@ function callGemini(apiKey, prompt) {
 }
 
 function callOpenAI(apiKey, prompt) {
+    const model = config.LLM || process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const body = JSON.stringify({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: model,
         messages: [{ role: 'system', content: 'You are a helpful DM assistant.' }, { role: 'user', content: prompt }],
         temperature: 0.7,
     });
@@ -114,8 +142,9 @@ function callOpenAI(apiKey, prompt) {
 }
 
 function callAnthropic(apiKey, prompt) {
+    const model = config.LLM || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
     const body = JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest',
+        model: model,
         max_tokens: 240,
         messages: [{ role: 'user', content: prompt }],
     });
