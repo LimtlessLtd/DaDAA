@@ -10,6 +10,7 @@ const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSumma
 const { buildPrompt, callModel } = require('./src/ai_provider');
 const { startWebEditor } = require('./src/web_editor');
 const { loadSessionNotes, findTriggeredNotes } = require('./src/session_manager');
+const config = require('./config.json');
 
 console.log('-> Starting DaDAA...');
 
@@ -65,6 +66,28 @@ async function sendDmToOwner(content) {
 client.once('clientReady', () => {
     console.log(`-> DaDAA is ready and logged in as ${client.user.tag}`);
     startWebEditor();
+    
+    const activeModel = config.LLM;
+
+    const hasKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+
+    // Write initial telemetry state so the debug panel doesn't appear empty at startup
+    saveLlmDebug({
+        timestamp: new Date().toISOString(),
+        model: activeModel,
+        latencyMs: 0,
+        transcript: 'Awaiting first speech segment...',
+        contextString: 'None',
+        rollingSummary: 'None',
+        fullPrompt: 'No transcripts evaluated yet.',
+        rawResponse: { 
+            reason: hasKey 
+                ? 'Awaiting speech trigger...' 
+                : 'ERROR: No API key found. Please create a .env file containing GEMINI_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY to activate live suggestions.' 
+        },
+        stats: stats
+    });
+
     initializeWorldContext()
         .then((context) => {
             worldContext = context;
@@ -154,6 +177,25 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                     const rollingSummary = getRollingSummary();
                     const prompt = buildPrompt(transcript, contextString, rollingSummary);
                     
+                    const activeModelName = process.env.AI_PROVIDER === 'gemini'
+                        ? (process.env.GEMINI_MODEL || 'gemini-1.5-flash')
+                        : (process.env.AI_PROVIDER === 'anthropic'
+                            ? (process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest')
+                            : (process.env.OPENAI_MODEL || 'gpt-4o-mini'));
+
+                    // Immediately write "Analyzing..." status so the user knows the AI is actively thinking!
+                    saveLlmDebug({
+                        timestamp: new Date().toISOString(),
+                        model: activeModelName,
+                        latencyMs: 0,
+                        transcript: transcript,
+                        contextString: contextString,
+                        rollingSummary: rollingSummary,
+                        fullPrompt: prompt,
+                        rawResponse: { reason: "Analyzing speech in background... (In-flight API request)" },
+                        stats: stats
+                    });
+
                     const apiStartTime = Date.now();
                     stats.llmCalls++;
                     
@@ -176,7 +218,7 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                                 // Save full debug telemetry
                                 saveLlmDebug({
                                     timestamp: new Date().toISOString(),
-                                    model: process.env.AI_PROVIDER === 'anthropic' ? (process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest') : (process.env.OPENAI_MODEL || 'gpt-4o-mini'),
+                                    model: activeModelName,
                                     latencyMs: latency,
                                     transcript: transcript,
                                     contextString: contextString,
@@ -185,9 +227,46 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                                     rawResponse: aiReply,
                                     stats: stats
                                 });
+                            } else {
+                                // Save empty/error telemetry when model returns null (e.g. unconfigured key)
+                                saveLlmDebug({
+                                    timestamp: new Date().toISOString(),
+                                    model: activeModelName,
+                                    latencyMs: 0,
+                                    transcript: transcript,
+                                    contextString: contextString,
+                                    rollingSummary: rollingSummary,
+                                    fullPrompt: prompt,
+                                    rawResponse: { 
+                                        isOOC: false,
+                                        isImportant: false,
+                                        suggestion: "Configure an API key in your .env file to enable live DM guidance.",
+                                        reason: "The AI provider returned null or failed to run successfully."
+                                    },
+                                    stats: stats
+                                });
                             }
                         })
-                        .catch((error) => console.warn('-> AI provider unavailable:', error.message));
+                        .catch((error) => {
+                            const latency = Date.now() - apiStartTime;
+                            console.warn('-> AI provider unavailable:', error.message);
+                            saveLlmDebug({
+                                timestamp: new Date().toISOString(),
+                                model: "API Error",
+                                latencyMs: latency,
+                                transcript: transcript,
+                                contextString: contextString,
+                                rollingSummary: rollingSummary,
+                                fullPrompt: prompt,
+                                rawResponse: { 
+                                    isOOC: false,
+                                    isImportant: false,
+                                    suggestion: `Error: ${error.message}`,
+                                    reason: "An exception occurred while connecting to the LLM endpoint."
+                                },
+                                stats: stats
+                            });
+                        });
                 }
             });
             message.reply('Listening to the channel!');

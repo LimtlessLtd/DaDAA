@@ -1,4 +1,5 @@
 const https = require('https');
+const config = require('../config.json');
 
 function buildPrompt(transcript, context, rollingSummary = '') {
     return `You are the Dungeon Master. You are a creative, narrative-focused Dungeon Master who has a deep understanding of the world and its lore. 
@@ -35,12 +36,18 @@ Live Transcript:
 }
 
 function callModel(prompt) {
-    const apiKey = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
-    const provider = process.env.AI_PROVIDER || 'openai';
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+    const provider = process.env.AI_PROVIDER || ((process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) ? 'gemini' : 'openai');
 
     if (!apiKey) {
         console.warn('-> AI Provider: No API key found in .env');
         return Promise.resolve(null);
+    }
+
+    if (provider === 'gemini') {
+        return callGemini(apiKey, prompt).then(text => {
+            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+        });
     }
 
     if (provider === 'anthropic') {
@@ -51,6 +58,36 @@ function callModel(prompt) {
 
     return callOpenAI(apiKey, prompt).then(text => {
         try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+    });
+}
+
+function callGemini(apiKey, prompt) {
+    const model = config.LLM;
+    const body = JSON.stringify({
+        contents: [{
+            parts: [{
+                text: prompt
+            }]
+        }],
+        generationConfig: {
+            temperature: 0.7,
+            responseMimeType: 'application/json'
+        }
+    });
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    return requestJson(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    }, body).then((data) => {
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        if (!text) {
+            throw new Error("No contents returned from Gemini completion.");
+        }
+        return text;
     });
 }
 
@@ -69,7 +106,10 @@ function callOpenAI(apiKey, prompt) {
         },
     }, body).then((data) => {
         const text = data?.choices?.[0]?.message?.content?.trim();
-        return text || null;
+        if (!text) {
+            throw new Error("No choices returned from OpenAI completion.");
+        }
+        return text;
     });
 }
 
@@ -89,7 +129,10 @@ function callAnthropic(apiKey, prompt) {
         },
     }, body).then((data) => {
         const text = data?.content?.[0]?.text?.trim();
-        return text || null;
+        if (!text) {
+            throw new Error("No text content returned from Anthropic message.");
+        }
+        return text;
     });
 }
 
@@ -103,9 +146,18 @@ function requestJson(url, headers, body) {
             res.on('end', () => {
                 try {
                     const parsed = JSON.parse(data);
-                    resolve(parsed);
+                    if (res.statusCode && res.statusCode >= 400) {
+                        const errMsg = parsed.error?.message || parsed.error || JSON.stringify(parsed);
+                        reject(new Error(`API Error (HTTP ${res.statusCode}): ${errMsg}`));
+                    } else {
+                        resolve(parsed);
+                    }
                 } catch (error) {
-                    reject(new Error(`Invalid JSON response: ${data}`));
+                    if (res.statusCode && res.statusCode >= 400) {
+                        reject(new Error(`API HTTP Error ${res.statusCode} (Invalid JSON response)`));
+                    } else {
+                        reject(new Error(`Invalid JSON response: ${data}`));
+                    }
                 }
             });
         });
