@@ -294,6 +294,7 @@ function buildDmSuggestion(transcript, knowledgeIndex, relationships) {
 }
 
 async function initializeWorldContext() {
+    //TODO turn this off if no local foundry DB
     const worldData = await getAllWorldData();
     const knowledgeIndex = buildKnowledgeIndex(worldData);
     // Load relationships, attempt migration to include ids, and remove any stale entries

@@ -6,7 +6,7 @@ node_modules/
 
 # Python virtual environment
 .venv/
-
+venv/
 # Transcription and temp data
 temp_data/
 
