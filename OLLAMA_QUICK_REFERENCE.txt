@@ -1,0 +1,40 @@
+================================
+OLLAMA QUICK REFERENCE
+================================
+
+TO USE OLLAMA (Local):
+1. Ensure Ollama is running: ollama serve
+2. Update config.json:
+   "OllamaConfig": {
+     "enabled": true,
+     "baseUrl": "http://localhost:11434",
+     "model": "neural-chat"
+   }
+3. Restart the bot
+
+TO USE CLOUD LLM (Gemini/OpenAI/Claude):
+1. Update config.json:
+   "OllamaConfig": {
+     "enabled": false
+   }
+2. Ensure your .env has API keys set
+3. Restart the bot
+
+USEFUL OLLAMA COMMANDS:
+- Start Ollama: ollama serve
+- Pull a model: ollama pull neural-chat
+- List models: ollama list
+- Remove a model: ollama rm neural-chat
+
+RECOMMENDED MODELS FOR D&D DM:
+- neural-chat (4GB) - Best for creative D&D content
+- mistral (8GB) - Fast and capable
+- openchat (7GB) - Good for conversations
+- llama2 (7GB-13GB) - Versatile, larger models
+
+VERIFY OLLAMA IS RUNNING:
+- Open http://localhost:11434 in browser
+- Should see Ollama interface
+
+CURRENT STATUS:
+- Open config.json to see current OllamaConfig settings

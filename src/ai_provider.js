@@ -1,4 +1,5 @@
 const https = require('https');
+const http = require('http');
 const config = require('../config.json');
 
 function buildPrompt(transcript, context, rollingSummary = '', characterMapString = '', nextSessionPlan = '', playerLogsString = '') {
@@ -60,6 +61,11 @@ Live Transcript:
 }
 
 function callModel(prompt) {
+    // Check if Ollama is enabled
+    if (config.OllamaConfig?.enabled) {
+        return callOllama(prompt);
+    }
+
     const modelName = String(config.LLM || '').toLowerCase();
     let provider = 'openai';
 
@@ -104,6 +110,21 @@ function callModel(prompt) {
     }
 
     return callOpenAI(apiKey, prompt).then(text => {
+        try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+    });
+}
+
+function callOllama(prompt) {
+    const baseUrl = config.OllamaConfig?.baseUrl || 'http://localhost:11434';
+    const model = config.OllamaConfig?.model || 'neural-chat';
+
+    const body = JSON.stringify({
+        model: model,
+        prompt: prompt,
+        stream: false
+    });
+
+    return requestOllama(baseUrl, body).then(text => {
         try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
     });
 }
@@ -189,6 +210,53 @@ function callAnthropic(apiKey, prompt) {
     });
 }
 
+function requestOllama(baseUrl, body) {
+    return new Promise((resolve, reject) => {
+        const url = new URL(`${baseUrl}/api/generate`);
+        const isHttps = url.protocol === 'https:';
+        const protocol = isHttps ? https : http;
+
+        const options = {
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname + url.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body)
+            }
+        };
+
+        const req = protocol.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => {
+                data += chunk;
+            });
+            res.on('end', () => {
+                try {
+                    if (res.statusCode && res.statusCode >= 400) {
+                        reject(new Error(`Ollama API Error (HTTP ${res.statusCode}): ${data}`));
+                    } else {
+                        // Ollama returns newline-delimited JSON, need to parse the response
+                        const response = JSON.parse(data);
+                        resolve(response.response || data);
+                    }
+                } catch (error) {
+                    if (res.statusCode && res.statusCode >= 400) {
+                        reject(new Error(`Ollama HTTP Error ${res.statusCode}`));
+                    } else {
+                        reject(new Error(`Invalid Ollama response: ${data}`));
+                    }
+                }
+            });
+        });
+
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+}
+
 function requestJson(url, headers, body) {
     return new Promise((resolve, reject) => {
         const req = https.request(url, headers, (res) => {
@@ -231,6 +299,11 @@ Recent Transcript Log:
 ${transcriptLog || 'No transcript available.'}
 
 Generate a short bulleted list of plans, unresolved threads, and likely upcoming encounters. Do NOT wrap in JSON, just output the plan as plain text.`;
+
+    // Check if Ollama is enabled
+    if (config.OllamaConfig?.enabled) {
+        return callOllama(prompt);
+    }
 
     const modelName = String(config.LLM || '').toLowerCase();
     let provider = 'openai';

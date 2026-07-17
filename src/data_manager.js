@@ -17,13 +17,9 @@ async function getAllWorldData() {
 
             for (const category of categories) {
                 const categoryPath = path.join(worldDataPath, category);
-                
-                // Debug: Log which category we are checking
-                console.log(`Checking category: ${category}`);
 
                 if (fs.existsSync(path.join(categoryPath, 'CURRENT'))) {
                     try {
-                        console.log(`  -> Found LevelDB database, opening...`);
                         const db = new ClassicLevel(categoryPath, { valueEncoding: 'json' });
                         const records = [];
                         
@@ -32,7 +28,6 @@ async function getAllWorldData() {
                         }
                         
                         worldData[category] = records;
-                        console.log(`  -> Successfully loaded ${records.length} records.`);
                         await db.close();
                         loadedFromDb = true;
                     } catch (err) {
@@ -72,7 +67,6 @@ async function getAllWorldData() {
                         }
                         if (records.length > 0) {
                             worldData[folder] = records;
-                            console.log(`  -> Successfully loaded ${records.length} records from local folder temp_data/${folder}`);
                         }
                     } catch (e) {
                         console.warn(`  -> Failed to read local folder temp_data/${folder}:`, e.message);
