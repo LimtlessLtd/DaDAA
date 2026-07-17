@@ -8,7 +8,7 @@ from faster_whisper import WhisperModel
 from scipy import signal
 
 # Load Silero VAD model
-vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False)
+vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False, trust_repo=True)
 (get_speech_timestamps, _, read_audio, _, _) = utils
 
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "medium")
