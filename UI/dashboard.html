@@ -433,11 +433,44 @@
         if (entitiesRes.ok) {
           const entities = await entitiesRes.json();
           
-          const actorSelect = document.getElementById('characterNameInput');
-          const currentActor = actorSelect.value;
-          actorSelect.innerHTML = '<option value="">Select Foundry Actor</option>' + 
-            (entities.characters || []).map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
-          if (currentActor) actorSelect.value = currentActor;
+          // Manage the character input: if there are no foundry characters, expose a free-text input
+          // so users can bind an arbitrary value. Keep the id 'characterNameInput' stable so
+          // bindCharacter() can read .value regardless of element type.
+          let actorElem = document.getElementById('characterNameInput');
+          const chars = (entities.characters || []);
+          const currentActor = actorElem && actorElem.value ? actorElem.value : '';
+
+          if (!chars.length) {
+            // Ensure we have an <input> for free-text entry
+            if (!actorElem || (actorElem.tagName && actorElem.tagName.toLowerCase() !== 'input')) {
+              const input = document.createElement('input');
+              input.type = 'text';
+              input.id = 'characterNameInput';
+              input.placeholder = 'Enter Foundry Actor name';
+              // minimal styling to match other inputs
+              input.style.background = '#0f172a';
+              input.style.border = '1px solid #334155';
+              input.style.color = 'white';
+              input.style.padding = '8px';
+              input.style.borderRadius = '6px';
+
+              if (actorElem && actorElem.parentNode) actorElem.parentNode.replaceChild(input, actorElem);
+              actorElem = input;
+            }
+            actorElem.value = currentActor || '';
+          } else {
+            // Ensure we have a <select> populated with available characters
+            if (!actorElem || (actorElem.tagName && actorElem.tagName.toLowerCase() !== 'select')) {
+              const select = document.createElement('select');
+              select.id = 'characterNameInput';
+              if (actorElem && actorElem.parentNode) actorElem.parentNode.replaceChild(select, actorElem);
+              actorElem = select;
+            }
+
+            actorElem.innerHTML = '<option value="">Select Foundry Actor</option>' + 
+              chars.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+            if (currentActor) actorElem.value = currentActor;
+          }
         }
       } catch (e) {
         console.warn('Failed to populate dropdowns', e);
