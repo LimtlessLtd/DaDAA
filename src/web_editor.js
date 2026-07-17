@@ -6,7 +6,7 @@ const { buildKnowledgeIndex, loadRelationships, saveRelationships, addRelationsh
 const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote } = require('./session_manager');
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('./character_manager');
 const { getRollingSummary } = require('./ai_helper');
-const { generateNextSessionPlan } = require('./ai_provider');
+const { generateNextEvent } = require('./ai_provider');
 
 const UI_ROOT = path.join(__dirname, '..', 'UI');
 const TEMP_DATA_ROOT = path.join(__dirname, '..', 'temp_data');
@@ -113,9 +113,11 @@ function startWebEditor() {
         if (pathname === '/api/session_state') {
             if (req.method === 'GET') {
                 const state = loadSessionState();
-                const planPath = path.join(TEMP_DATA_ROOT, 'next_session_plan.txt');
-                if (fs.existsSync(planPath)) {
-                    state.nextSessionPlan = fs.readFileSync(planPath, 'utf8');
+                const eventPath = path.join(TEMP_DATA_ROOT, 'current_event.json');
+                if (fs.existsSync(eventPath)) {
+                    try {
+                        state.currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+                    } catch(e) {}
                 }
                 sendJson(res, 200, state);
                 return;
@@ -385,22 +387,27 @@ function startWebEditor() {
             }
         }
 
-        if (pathname === '/api/generate_plan') {
+        if (pathname === '/api/generate_event') {
             if (req.method === 'POST') {
                 try {
                     const rollingSummary = getRollingSummary();
-                    // Grab the last ~100 lines of transcript
-                    const log = readTranscriptLog();
-                    const logLines = log.split('\n').filter(Boolean).slice(-100).join('\n');
                     
-                    const planText = await generateNextSessionPlan(rollingSummary, logLines);
+                    let currentEventData = { activeEvent: null, archivedEvents: [] };
+                    const eventPath = path.join(TEMP_DATA_ROOT, 'current_event.json');
+                    if (fs.existsSync(eventPath)) {
+                        try {
+                            currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+                        } catch(e){}
+                    }
+
+                    const newEventObj = await generateNextEvent(currentEventData.archivedEvents, rollingSummary, "Manually generated event by DM");
                     
-                    if (planText) {
-                        const planPath = path.join(TEMP_DATA_ROOT, 'next_session_plan.txt');
-                        fs.writeFileSync(planPath, planText, 'utf8');
-                        sendJson(res, 200, { plan: planText });
+                    if (newEventObj && newEventObj.activeEvent) {
+                        currentEventData.activeEvent = newEventObj.activeEvent;
+                        fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                        sendJson(res, 200, { activeEvent: currentEventData.activeEvent });
                     } else {
-                        sendJson(res, 400, { error: 'Failed to generate plan.' });
+                        sendJson(res, 400, { error: 'Failed to generate event.' });
                     }
                 } catch (err) {
                     sendJson(res, 500, { error: err.message });

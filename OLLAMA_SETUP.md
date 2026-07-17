@@ -135,4 +135,4 @@ ollama list
 - **Privacy**: All data stays on your local machine
 - **Cost**: No per-request costs (once model is downloaded)
 - **Latency**: May be higher than cloud providers depending on your hardware
-- **Both Functions Support Ollama**: Both `callModel()` and `generateNextSessionPlan()` support Ollama
+- **Both Functions Support Ollama**: Both `callModel()` and `generateNextEvent()` support Ollama

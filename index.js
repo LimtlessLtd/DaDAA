@@ -8,7 +8,7 @@ const { joinAndListen, speakText } = require('./src/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
 const { initializeWorldContext, appendTranscript, readTranscriptLog, buildDmSuggestion, loadSessionState, saveSessionState } = require('./src/context_manager');
 const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai_helper');
-const { buildPrompt, callModel } = require('./src/ai_provider');
+const { buildPrompt, callModel, generateNextEvent } = require('./src/ai_provider');
 const { startWebEditor } = require('./src/web_editor');
 const { loadSessionNotes, findTriggeredNotes } = require('./src/session_manager');
 const { bindCharacter, unbindCharacter, getCharacterMapString, addCharacterLogs, loadCharacterLogs, recordDiscordUser, getPlayerLogsString } = require('./src/character_manager');
@@ -66,13 +66,18 @@ async function handleSilenceDriver() {
     // Treat silence as a "blank" transcript
     const fakeTranscript = "(Players are silent and awaiting the Dungeon Master's lead)";
     
-    // UPDATED: No relationships argument
     const summary = summarizeTranscript(fakeTranscript, worldContext.knowledgeIndex);
     const sessionState = loadSessionState();
-    let nextSessionPlan = '';
-    const planPath = path.join(TEMP_DATA_DIR, 'next_session_plan.txt');
-    if (fs.existsSync(planPath)) {
-        nextSessionPlan = fs.readFileSync(planPath, 'utf8');
+    let currentEventString = '';
+    const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
+    let currentEventData = { activeEvent: null, archivedEvents: [] };
+    if (fs.existsSync(eventPath)) {
+        try {
+            currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+            if (currentEventData.activeEvent) {
+                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\n${currentEventData.activeEvent.description}\nConditions: ${currentEventData.activeEvent.conditionsToClear?.join(', ')}`;
+            }
+        } catch(e) {}
     }
     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
@@ -83,7 +88,7 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
     const rollingSummary = getRollingSummary();
     const characterMapStr = getCharacterMapString();
     const playerLogsStr = getPlayerLogsString();
-    const prompt = buildPrompt(fakeTranscript, contextString, rollingSummary, characterMapStr, nextSessionPlan, playerLogsStr);
+    const prompt = buildPrompt(fakeTranscript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
     
     const activeModelName = config.LLM || 'Unknown Model';
 
@@ -125,6 +130,35 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
             if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
                 addCharacterLogs(aiReply.characterLogs);
             }
+
+            if (aiReply.eventResolved && currentEventData.activeEvent) {
+                console.log(`-> Active Event Resolved (Silence Driver): ${currentEventData.activeEvent.title}`);
+                sendDmToOwner(`Event Cleared: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
+                
+                currentEventData.archivedEvents.push({
+                    title: currentEventData.activeEvent.title,
+                    resolution: aiReply.resolutionSummary
+                });
+                if (currentEventData.archivedEvents.length > 100) {
+                    currentEventData.archivedEvents.shift();
+                }
+                
+                currentEventData.activeEvent = null;
+                fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                console.log('-> Generating new Active Event (Silence Driver)...');
+                generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
+                    .then(newEventObj => {
+                        if (newEventObj && newEventObj.activeEvent) {
+                            currentEventData.activeEvent = newEventObj.activeEvent;
+                            fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                            console.log(`-> New Active Event Created: ${newEventObj.activeEvent.title}`);
+                            sendDmToOwner(`New Event: ${newEventObj.activeEvent.title}\n${newEventObj.activeEvent.description}`);
+                        }
+                    }).catch(err => {
+                        console.error('-> Failed to generate new event:', err);
+                    });
+            }
             
             saveLlmDebug({
                 timestamp: new Date().toISOString(),
@@ -148,14 +182,8 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
 }
 
 async function sendDmToOwner(content) {
-    if (!ownerUserId) return;
-
-    try {
-        const user = await client.users.fetch(ownerUserId);
-        if (user) await user.send(content);
-    } catch (error) {
-        console.warn('-> Unable to send DM to owner:', error.message);
-    }
+    // Discord DM messaging disabled per user request
+    return;
 }
 
 client.once('clientReady', () => {
@@ -247,10 +275,16 @@ client.on('messageCreate', async (message) => {
                     const summary = summarizeTranscript(transcript, worldContext.knowledgeIndex);
 
                     const sessionState = loadSessionState();
-                    let nextSessionPlan = '';
-                    const planPath = path.join(TEMP_DATA_DIR, 'next_session_plan.txt');
-                    if (fs.existsSync(planPath)) {
-                        nextSessionPlan = fs.readFileSync(planPath, 'utf8');
+                    let currentEventString = '';
+                    const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
+                    let currentEventData = { activeEvent: null, archivedEvents: [] };
+                    if (fs.existsSync(eventPath)) {
+                        try {
+                            currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+                            if (currentEventData.activeEvent) {
+                                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\n${currentEventData.activeEvent.description}\nConditions: ${currentEventData.activeEvent.conditionsToClear?.join(', ')}`;
+                            }
+                        } catch(e) {}
                     }
                     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
@@ -261,7 +295,7 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                     const rollingSummary = getRollingSummary();
                     const characterMapStr = getCharacterMapString();
                     const playerLogsStr = getPlayerLogsString();
-                    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, nextSessionPlan, playerLogsStr);
+                    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
                     
                     const activeModelName = config.LLM || 'Unknown Model';
 
@@ -304,6 +338,39 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
 
                                 if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
                                     addCharacterLogs(aiReply.characterLogs);
+                                }
+
+                                if (aiReply.eventResolved && currentEventData.activeEvent) {
+                                    console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
+                                    sendDmToOwner(`Event Cleared: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
+                                    
+                                    currentEventData.archivedEvents.push({
+                                        title: currentEventData.activeEvent.title,
+                                        resolution: aiReply.resolutionSummary
+                                    });
+                                    // keep only last 100 archived events to avoid bloating context
+                                    if (currentEventData.archivedEvents.length > 100) {
+                                        currentEventData.archivedEvents.shift();
+                                    }
+                                    
+                                    // Save the archived state first so UI updates immediately
+                                    const oldTitle = currentEventData.activeEvent.title;
+                                    currentEventData.activeEvent = null;
+                                    fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                                    // Trigger next event generation
+                                    console.log('-> Generating new Active Event...');
+                                    generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
+                                        .then(newEventObj => {
+                                            if (newEventObj && newEventObj.activeEvent) {
+                                                currentEventData.activeEvent = newEventObj.activeEvent;
+                                                fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                                                console.log(`-> New Active Event Created: ${newEventObj.activeEvent.title}`);
+                                                sendDmToOwner(`New Event: ${newEventObj.activeEvent.title}\n${newEventObj.activeEvent.description}`);
+                                            }
+                                        }).catch(err => {
+                                            console.error('-> Failed to generate new event:', err);
+                                        });
                                 }
                                 
                                 // Save full debug telemetry

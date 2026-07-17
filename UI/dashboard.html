@@ -167,10 +167,18 @@
     <div class="grid-3">
       <!-- Session Planning -->
       <div class="panel">
-        <div class="panel-title">Next Session Plan</div>
+        <div class="panel-title">Current Event</div>
         <div class="input-group">
-          <button id="generatePlanBtn">Generate plan for next session</button>
-          <pre id="sessionPlanDisplay" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; white-space: pre-wrap; margin-top: 8px; max-height: 150px; overflow-y: auto;">Plans will appear here...</pre>
+          <button id="generateEventBtn">Generate new event</button>
+          <div id="currentEventDisplay" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
+             <!-- Event injected here -->
+             No active event.
+          </div>
+          <div style="margin-top: 10px; font-size: 0.75rem; color: #64748b; font-weight: bold;">Archived Events</div>
+          <div id="archivedEventsDisplay" style="background: #0f172a; padding: 8px; border-radius: 6px; border: 1px solid #334155; font-size: 0.75rem; color: #94a3b8; margin-top: 4px; max-height: 100px; overflow-y: auto;">
+             <!-- Archived events injected here -->
+             No archived events.
+          </div>
         </div>
       </div>
 
@@ -290,19 +298,18 @@
         .replace(/'/g, '&#39;');
     }
 
-    async function generateSessionPlan() {
-      const btn = document.getElementById('generatePlanBtn');
-      btn.textContent = 'Generating...';
+    async function generateCurrentEvent() {
+      const btn = document.getElementById('generateEventBtn');
+      btn.textContent = 'Generating Event...';
       btn.disabled = true;
       try {
-        const res = await fetch('/api/generate_plan', { method: 'POST' });
-        if (!res.ok) throw new Error('Failed to generate plan');
-        const data = await res.json();
-        document.getElementById('sessionPlanDisplay').textContent = data.plan;
+        const res = await fetch('/api/generate_event', { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to generate event');
+        loadSessionStateData();
       } catch (err) {
         alert(err.message);
       } finally {
-        btn.textContent = 'Generate plan for next session';
+        btn.textContent = 'Generate new event';
         btn.disabled = false;
       }
     }
@@ -378,8 +385,33 @@
         const res = await fetch('/api/session_state');
         if (!res.ok) return;
         const state = await res.json();
-        if (state.nextSessionPlan) {
-          document.getElementById('sessionPlanDisplay').textContent = state.nextSessionPlan;
+        if (state.currentEventData) {
+          const ceData = state.currentEventData;
+          if (ceData.activeEvent) {
+             document.getElementById('currentEventDisplay').innerHTML = `
+                <strong>${escapeHtml(ceData.activeEvent.title)}</strong><br>
+                ${escapeHtml(ceData.activeEvent.description)}<br>
+                <div style="margin-top: 6px; font-size: 0.75rem; color: #94a3b8;">
+                    <strong>Conditions to Clear:</strong>
+                    <ul style="padding-left: 16px; margin: 4px 0;">
+                        ${(ceData.activeEvent.conditionsToClear || []).map(c => `<li>${escapeHtml(c)}</li>`).join('')}
+                    </ul>
+                </div>
+             `;
+          } else {
+             document.getElementById('currentEventDisplay').textContent = 'No active event.';
+          }
+
+          if (ceData.archivedEvents && ceData.archivedEvents.length > 0) {
+             document.getElementById('archivedEventsDisplay').innerHTML = ceData.archivedEvents.map(e => `
+                <div style="margin-bottom: 6px; border-bottom: 1px solid #334155; padding-bottom: 4px;">
+                    <strong>${escapeHtml(e.title)}</strong><br>
+                    ${escapeHtml(e.resolution)}
+                </div>
+             `).join('');
+          } else {
+             document.getElementById('archivedEventsDisplay').textContent = 'No archived events.';
+          }
         }
       } catch (e) {
         console.warn('Failed to load session state', e);
@@ -606,7 +638,7 @@
       loadData();
     }
 
-    document.getElementById('generatePlanBtn').addEventListener('click', generateSessionPlan);
+    document.getElementById('generateEventBtn').addEventListener('click', generateCurrentEvent);
     document.getElementById('bindCharacterBtn').addEventListener('click', bindCharacter);
     document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
     document.getElementById('insightsFilterBtn').addEventListener('click', toggleInsightsFilter);

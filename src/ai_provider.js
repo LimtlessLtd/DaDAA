@@ -2,7 +2,7 @@ const https = require('https');
 const http = require('http');
 const config = require('../config.json');
 
-function buildPrompt(transcript, context, rollingSummary = '', characterMapString = '', nextSessionPlan = '', playerLogsString = '') {
+function buildPrompt(transcript, context, rollingSummary = '', characterMapString = '', currentEventString = '', playerLogsString = '') {
     return `You are the sole Dungeon Master. You are a creative, narrative-focused Dungeon Master with absolute authority over the world, its rules, and its lore. You are not assisting a human DM; you ARE the DM. Your goal is to keep players immersed, enforce the rules, and run a consistent Dungeons and Dragons world. You decide what NPCs do, the outcomes of player actions, and world events.
 
 STRICT OUTPUT FORMAT:
@@ -20,7 +20,9 @@ Respond ONLY with a JSON object:
       "log": "A brief description of the event, trauma, NPC interaction, or plot point",
       "type": "trauma | relationship | plot"
     }
-  ]
+  ],
+  "eventResolved": true/false,
+  "resolutionSummary": "If eventResolved is true, describe how the players resolved the current event (e.g., 'They smashed the door open'). Otherwise, leave empty."
 }
 
 GUIDELINES:
@@ -38,11 +40,11 @@ GUIDELINES:
 5. In-Character Speech (spokenNarrative): If isImportant is true, you can optionally provide a "spokenNarrative". This string will be converted to Text-to-Speech and played directly into the Discord channel. Write it in your tone as a mysterious, dramatic Dungeon Master. Keep it under 2 sentences. 
 6. Voice Profiles: If spokenNarrative is provided, specify the "voiceProfile" to match the speaker (e.g., "goblin" for a squeaky voice, "old_man" for a slow voice).
 7. Character Logs: If the transcript contains a major character development, traumatic experience, notable NPC interaction, or major plot event for a player character, log it in "characterLogs". Leave it as an empty array [] if nothing major happened. Use the Discord User to Character Map to understand who is acting.
-8. Intent & Planning: Use the "Next Session Plan" to subtly steer or prepare the players for your planned upcoming events.
+8. Current Event Tracking: Use the "Current Event" context to understand the immediate obstacle, puzzle, or scene the players are dealing with right now. If the transcript shows the players taking an action that resolves or clears the conditions of the Current Event, set "eventResolved" to true and provide a "resolutionSummary".
 9. Enforcing Boundaries (The "No" Rule): You have absolute authority over the world's reality. If a player attempts an action that is physically impossible, severely breaks immersion, or wildly defies the rules of D&D, you MUST deny it. Explain the refusal clearly in your "spokenNarrative" using a firm description of why it fails, or use the "No, but..." philosophy to offer a realistic alternative.
 
-Next Session Plan (Your intent and plans for the future):
-${nextSessionPlan || 'No plan provided for the next session.'}
+Current Event (The immediate obstacle or scene):
+${currentEventString || 'No active event.'}
 
 Short-Term Session Memory (Rolling Summary of previous key events):
 ${rollingSummary || 'No major events have occurred yet in this session.'}
@@ -289,20 +291,39 @@ function requestJson(url, headers, body) {
     });
 }
 
-function generateNextSessionPlan(rollingSummary, transcriptLog) {
-    const prompt = `You are an expert Dungeon Master assistant. Based on the session's rolling summary and recent transcript log, generate a concise plan for the next session. This plan will guide the DM and the AI in preparing and providing suggestions next time.
+function generateNextEvent(archivedEvents, rollingSummary, lastResolution) {
+    const prompt = `You are an expert Dungeon Master. The players have just resolved the previous event, and you need to generate the NEXT immediate event, obstacle, puzzle, or scene they face. Be creative and think outside the box. Give hints on how to proceed occasionally.
 
-Rolling Summary:
+Rolling Summary of Session:
 ${rollingSummary || 'No major events recorded.'}
 
-Recent Transcript Log:
-${transcriptLog || 'No transcript available.'}
+Archived Events (Recent History):
+${JSON.stringify(archivedEvents || [], null, 2)}
 
-Generate a short bulleted list of plans, unresolved threads, and likely upcoming encounters. Do NOT wrap in JSON, just output the plan as plain text.`;
+How they resolved the last event:
+${lastResolution || 'N/A'}
+
+Based on their actions and the current narrative, generate the new Active Event.
+Respond ONLY with a JSON object in this exact format:
+{
+  "activeEvent": {
+    "title": "Short title of the new scene/obstacle",
+    "description": "What do the players see, hear, or experience right now?",
+    "conditionsToClear": [
+      "Condition 1 (e.g., 'Defeat the goblin ambush')",
+      "Condition 2 (e.g., 'Negotiate with the goblin leader')"
+    ],
+    "potentialOutcomes": "What happens if they succeed or fail?"
+  }
+}`;
 
     // Check if Ollama is enabled
     if (config.OllamaConfig?.enabled) {
-        return callOllama(prompt);
+        return callOllama(prompt).then(res => {
+            // callOllama already attempts to JSON.parse and returns an object if successful
+            // so we don't need to parse it again if it's already an object
+            return (typeof res === 'object') ? res : null;
+        });
     }
 
     const modelName = String(config.LLM || '').toLowerCase();
@@ -333,18 +354,31 @@ Generate a short bulleted list of plans, unresolved threads, and likely upcoming
 
     if (!apiKey) {
         console.warn('-> AI Provider: No API key found in .env');
-        return Promise.resolve('No API key configured.');
+        return Promise.resolve(null);
     }
 
+    let promise;
     if (provider === 'gemini') {
-        return callGemini(apiKey, prompt);
+        promise = callGemini(apiKey, prompt);
+    } else if (provider === 'anthropic') {
+        promise = callAnthropic(apiKey, prompt);
+    } else {
+        promise = callOpenAI(apiKey, prompt);
     }
 
-    if (provider === 'anthropic') {
-        return callAnthropic(apiKey, prompt);
-    }
-
-    return callOpenAI(apiKey, prompt);
+    return promise.then(res => {
+        if (!res) return null;
+        try {
+            // Strip out markdown if it exists
+            if (typeof res === 'string' && res.includes('\`\`\`json')) {
+                res = res.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '');
+            }
+            return typeof res === 'string' ? JSON.parse(res) : res;
+        } catch (e) {
+            console.error('Failed to parse next event JSON:', e);
+            return null;
+        }
+    });
 }
 
-module.exports = { buildPrompt, callModel, generateNextSessionPlan };
+module.exports = { buildPrompt, callModel, generateNextEvent };
