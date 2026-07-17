@@ -73,6 +73,11 @@
       display: flex; 
       justify-content: space-between; 
       align-items: center;
+      gap: 8px;
+    }
+    .panel-title button {
+      flex-shrink: 0;
+      white-space: nowrap;
     }
     .item { 
       background: #0f172a; 
@@ -140,7 +145,10 @@
     <div class="grid">
       <!-- Left Column: Insights / Memory -->
       <div class="panel">
-        <div class="panel-title">Recent AI Insights</div>
+        <div class="panel-title">
+          Recent AI Insights
+          <button id="insightsFilterBtn" style="padding: 4px 8px; font-size: 0.75rem;">Show 5 Recent</button>
+        </div>
         <div id="memory"></div>
       </div>
 
@@ -251,6 +259,8 @@
     const speakerColorMap = {};
     let transcriptFullView = false;
     const transcriptPreviewLines = 5;
+    let insightsFilterActive = false;
+    const insightsPreviewCount = 5;
 
     function getSpeakerColor(source) {
       if (!speakerColorMap[source]) {
@@ -441,7 +451,8 @@
         const memoryContainer = document.getElementById('memory');
         
         if (memory.summaries && memory.summaries.length) {
-          memoryContainer.innerHTML = memory.summaries.slice(-15).reverse().map((entry) => {
+          const count = insightsFilterActive ? insightsPreviewCount : 15;
+          memoryContainer.innerHTML = memory.summaries.slice(-count).reverse().map((entry) => {
             if (entry.type === 'ai_insight') {
               return `
                 <div class="item" style="border-left: 4px solid #f59e0b;">
@@ -459,6 +470,7 @@
                 <div style="margin-top: 4px; color: #94a3b8;">${escapeHtml(advice)}</div>
               </div>`;
           }).join('');
+          updateInsightsFilterBtn();
         } else {
           memoryContainer.innerHTML = '<div class="item">No high-importance insights yet.</div>';
         }
@@ -550,9 +562,21 @@
       loadData();
     }
 
+    function updateInsightsFilterBtn() {
+      const button = document.getElementById('insightsFilterBtn');
+      if (!button) return;
+      button.innerText = insightsFilterActive ? 'Show All Insights' : 'Show 5 Recent';
+    }
+
+    function toggleInsightsFilter() {
+      insightsFilterActive = !insightsFilterActive;
+      loadData();
+    }
+
     document.getElementById('generatePlanBtn').addEventListener('click', generateSessionPlan);
     document.getElementById('bindCharacterBtn').addEventListener('click', bindCharacter);
     document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
+    document.getElementById('insightsFilterBtn').addEventListener('click', toggleInsightsFilter);
 
     // --- LLM Telemetry & Debug Mode ---
     let debugModeActive = false;

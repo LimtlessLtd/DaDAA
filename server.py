@@ -68,7 +68,7 @@ async def audio_handler(websocket):
     CHUNK_SIZE = 512              # 32ms at 16kHz
     SILENCE_LIMIT_FRAMES = 35     # 35 * 32ms = 1120ms of continuous silence before transcribing
     MIN_SPEECH_FRAMES = 10        # 10 * 32ms = 320ms of speech minimum to prevent static/mic bumps
-    TIMEOUT_SECONDS = 1.0         # 1 second of packet absence before triggering fallback transcription
+    TIMEOUT_SECONDS = 0.8         # 0.8 seconds of packet absence before triggering fallback transcription
     VAD_THRESHOLD = 0.4           # Standard threshold for Silero VAD to ignore minor background hiss
 
     try:
