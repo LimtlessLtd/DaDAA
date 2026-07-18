@@ -42,6 +42,7 @@ let stats = {
 let silenceTimer = null;
 const SILENCE_TIMEOUT_MS = 45000; // 45 seconds of silence before the DM speaks up
 let lastSpeechTimestamp = Date.now();
+const activeSpeakers = new Set();
 
 const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
 
@@ -258,8 +259,12 @@ client.on('messageCreate', async (message) => {
                 lastSpeechTimestamp = Date.now();
                 if (silenceTimer) {
                     clearTimeout(silenceTimer);
+                    silenceTimer = null;
                 }
-                silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
+                // Only restart the timer if no one is currently talking
+                if (activeSpeakers.size === 0) {
+                    silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
+                }
 
                 if (worldContext) {
                     const sessionNotes = loadSessionNotes();
@@ -499,6 +504,27 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
     if (message.content === '!dashboard') {
         message.reply('Open the dashboard at http://localhost:8000/dashboard.html');
         return;
+    }
+});
+
+client.on('dndSpeechStart', (userId) => {
+    activeSpeakers.add(userId);
+    // Pause the silence timer because someone is talking
+    if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+    }
+});
+
+client.on('dndSpeechEnd', (userId) => {
+    activeSpeakers.delete(userId);
+    // If no one else is talking, restart the silence timer
+    if (activeSpeakers.size === 0) {
+        lastSpeechTimestamp = Date.now();
+        if (silenceTimer) {
+            clearTimeout(silenceTimer);
+        }
+        silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
     }
 });
 

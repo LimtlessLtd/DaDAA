@@ -149,7 +149,7 @@ async def audio_handler(websocket):
         print(f"-> Transcription handler exception: {err}")
 
 async def main():
-    async with websockets.serve(audio_handler, "localhost", 8765, ping_interval=None, ping_timeout=None):
+    async with websockets.serve(audio_handler, "127.0.0.1", 8765, ping_interval=None, ping_timeout=None):
         print("-> Transcription server running with forced 512-sample VAD framing")
         await asyncio.Future()
 

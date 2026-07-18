@@ -10,9 +10,9 @@ Respond ONLY with a JSON object:
 {
   "isOOC": true/false,
   "isImportant": true/false,
-  "suggestion": "Your 2-4 sentence internal reasoning or mechanical ruling here",
+  "suggestion": "Your internal reasoning or mechanical ruling here (this is not read aloud to players)",
   "reason": "Why this is important",
-  "spokenNarrative": "Optional: Write a compelling line of dialogue or narrative for YOU to speak aloud to the players, or leave empty if nothing needs to be said right now.",
+  "spokenNarrative": "If isImportant is true, you MUST write the narrative, dialogue, hint, or skill check request here so it is spoken aloud to the players. Do not hide important hints in 'suggestion'.",
   "voiceProfile": "Optional: One of [narrator, goblin, old_man, old_woman, man, woman, young_man, young_woman, child_boy, child_girl, monster] to match the character speaking. Default is narrator.",
   "characterLogs": [
     {
@@ -37,7 +37,7 @@ GUIDELINES:
    - When a player attempts an impossible, game-breaking, or highly unrealistic action that requires a firm denial.
    - When the transcript says "(Players are silent and awaiting the Dungeon Master's lead)" you MUST set isImportant to true and provide narrative to progress the scene!
    Otherwise, set "isImportant" to false so you are not distracted by routine roleplay or basic descriptions.
-5. In-Character Speech (spokenNarrative): If isImportant is true, you can optionally provide a "spokenNarrative". This string will be converted to Text-to-Speech and played directly into the Discord channel. Write it in your tone as a mysterious, dramatic Dungeon Master. Keep it under 2 sentences. 
+5. In-Character Speech (spokenNarrative): If isImportant is true and you have guidance, a hint, or a skill check to request, you MUST include it in the "spokenNarrative" so the players hear it. For example, weave the hint into your description: "The dust on the tome seems undisturbed... perhaps an Investigation check would reveal more." This string will be converted to Text-to-Speech.
 6. Voice Profiles: If spokenNarrative is provided, specify the "voiceProfile" to match the speaker (e.g., "goblin" for a squeaky voice, "old_man" for a slow voice).
 7. Character Logs: If the transcript contains a major character development, traumatic experience, notable NPC interaction, or major plot event for a player character, log it in "characterLogs". Leave it as an empty array [] if nothing major happened. Use the Discord User to Character Map to understand who is acting.
 8. Current Event Tracking: Use the "Current Event" context to understand the immediate obstacle, puzzle, or scene the players are dealing with right now. If the transcript shows the players taking an action that resolves or clears the conditions of the Current Event, set "eventResolved" to true and provide a "resolutionSummary".
@@ -292,68 +292,81 @@ function requestJson(url, headers, body) {
 }
 
 function generateNextEvent(archivedEvents, rollingSummary, lastResolution) {
+    const recentEvents = Array.isArray(archivedEvents) ? archivedEvents.slice(-5) : [];
+
     const prompt = `You are an expert Dungeon Master. The players have just resolved the previous event, and you need to generate the NEXT immediate event, obstacle, puzzle, or scene they face. Be creative and think outside the box. Give hints on how to proceed occasionally.
 
 Rolling Summary of Session:
 ${rollingSummary || 'No major events recorded.'}
 
-Archived Events (Recent History):
-${JSON.stringify(archivedEvents || [], null, 2)}
+Recent History (Last ${recentEvents.length} Events):
+${JSON.stringify(recentEvents, null, 2)}
 
 How they resolved the last event:
 ${lastResolution || 'N/A'}
 
 Based on their actions and the current narrative, generate the new Active Event.
-Respond ONLY with a JSON object in this exact format:
+Respond ONLY with a JSON object in this exact format. Do not use markdown backticks:
 {
   "activeEvent": {
     "title": "Short title of the new scene/obstacle",
-    "description": "What do the players see, hear, or experience right now?",
+    "description": "What do the players see, hear, or experience during the event?",
     "conditionsToClear": [
       "Condition 1 (e.g., 'Defeat the goblin ambush')",
-      "Condition 2 (e.g., 'Negotiate with the goblin leader')"
+      "Condition 2 (e.g., 'Negotiate with the goblin leader')",
+      "Condition 3 (e.g., 'Be creative with your conditions!')"
     ],
     "potentialOutcomes": "What happens if they succeed or fail?"
   }
 }`;
 
-    // Check if Ollama is enabled
+    // 1. Primary Check: Default to Ollama if enabled
     if (config.OllamaConfig?.enabled) {
         return callOllama(prompt).then(res => {
-            // callOllama already attempts to JSON.parse and returns an object if successful
-            // so we don't need to parse it again if it's already an object
             return (typeof res === 'object') ? res : null;
         });
     }
 
+    // Gather available API keys
+    const keys = {
+        gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+        anthropic: process.env.ANTHROPIC_API_KEY,
+        openai: process.env.OPENAI_API_KEY
+    };
+
     const modelName = String(config.LLM || '').toLowerCase();
-    let provider = 'openai';
-
-    if (modelName.includes('gemini')) {
-        provider = 'gemini';
-    } else if (modelName.includes('claude')) {
-        provider = 'anthropic';
-    } else if (modelName.includes('gpt') || modelName.includes('o1')) {
-        provider = 'openai';
-    } else {
-        provider = process.env.AI_PROVIDER || 'openai';
-    }
-
+    let provider = null;
     let apiKey = null;
-    if (provider === 'gemini') {
-        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-    } else if (provider === 'anthropic') {
-        apiKey = process.env.ANTHROPIC_API_KEY;
-    } else {
-        apiKey = process.env.OPENAI_API_KEY;
+
+    // 2. Check if config.LLM forces a specific available provider
+    if (modelName.includes('gemini') && keys.gemini) {
+        provider = 'gemini';
+        apiKey = keys.gemini;
+    } else if (modelName.includes('claude') && keys.anthropic) {
+        provider = 'anthropic';
+        apiKey = keys.anthropic;
+    } else if ((modelName.includes('gpt') || modelName.includes('o1')) && keys.openai) {
+        provider = 'openai';
+        apiKey = keys.openai;
+    } 
+    
+    // 3. Waterfall Fallback: Priority order Gemini -> Anthropic -> OpenAI
+    if (!provider || !apiKey) {
+        if (keys.gemini) {
+            provider = 'gemini';
+            apiKey = keys.gemini;
+        } else if (keys.anthropic) {
+            provider = 'anthropic';
+            apiKey = keys.anthropic;
+        } else if (keys.openai) {
+            provider = 'openai';
+            apiKey = keys.openai;
+        }
     }
 
-    if (!apiKey) {
-        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
-    }
-
-    if (!apiKey) {
-        console.warn('-> AI Provider: No API key found in .env');
+    // Fail early if no provider or keys are available
+    if (!provider || !apiKey) {
+        console.warn('-> AI Provider: Ollama is disabled and no valid cloud API keys were found.');
         return Promise.resolve(null);
     }
 
@@ -369,13 +382,12 @@ Respond ONLY with a JSON object in this exact format:
     return promise.then(res => {
         if (!res) return null;
         try {
-            // Strip out markdown if it exists
-            if (typeof res === 'string' && res.includes('\`\`\`json')) {
-                res = res.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '');
+            if (typeof res === 'string' && res.includes('```')) {
+                res = res.replace(/```json/gi, '').replace(/```/g, '').trim();
             }
             return typeof res === 'string' ? JSON.parse(res) : res;
         } catch (e) {
-            console.error('Failed to parse next event JSON:', e);
+            console.error(`Failed to parse next event JSON from ${provider}:`, e);
             return null;
         }
     });

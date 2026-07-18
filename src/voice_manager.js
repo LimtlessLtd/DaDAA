@@ -1,5 +1,5 @@
 // src/voice_manager.js
-const { joinVoiceChannel, EndBehaviorType, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const { joinVoiceChannel, EndBehaviorType, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
 const prism = require('prism-media');
 const WebSocket = require('ws');
 const { execFile } = require('child_process');
@@ -27,7 +27,7 @@ function ensureSocket(userId) {
         return existing;
     }
 
-    const socket = new WebSocket('ws://localhost:8765');
+    const socket = new WebSocket('ws://127.0.0.1:8765');
     socket.on('open', () => {
         console.log(`-> Connected to AI Transcription Server for user ${userId}`);
         try {
@@ -87,13 +87,28 @@ function joinAndListen(client, guildId, channelId, handler) {
     currentVoiceConnection = connection;
     connection.subscribe(audioPlayer);
 
+    // WORKAROUND: Play a tiny bit of silence so Discord starts sending us voice packets
+    const { Readable } = require('stream');
+    class Silence extends Readable {
+        _read() {
+            this.push(Buffer.alloc(960 * 2 * 2));
+            this.push(null);
+        }
+    }
+    audioPlayer.play(createAudioResource(new Silence(), { inputType: StreamType.Raw }));
+
     connection.receiver.speaking.on('start', (userId) => {
+        console.log(`[DEBUG] User ${userId} started speaking`);
         // Prevent registering duplicate streams/subscriptions for the same user if they are already speaking
         if (activeStreams.has(userId)) {
+            console.log(`[DEBUG] Stream already active for ${userId}`);
             return;
         }
 
         const socket = ensureSocket(userId);
+        
+        // Let the rest of the bot know someone is talking
+        client.emit('dndSpeechStart', userId);
         
         // Record the start timestamp of this specific speech segment
         if (!utteranceStartTimes.has(userId)) {
@@ -118,7 +133,10 @@ function joinAndListen(client, guildId, channelId, handler) {
             console.warn(`-> Opus decoder error for user ${userId} (corrupted packet discarded):`, err.message);
         });
 
+        let packetCount = 0;
         audioStream.pipe(opusDecoder).on('data', (chunk) => {
+            packetCount++;
+            if (packetCount % 50 === 0) console.log(`[DEBUG] Sent ${packetCount} chunks to server for ${userId}`);
             if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(chunk);
             }
@@ -126,6 +144,7 @@ function joinAndListen(client, guildId, channelId, handler) {
 
         audioStream.on('end', () => {
             activeStreams.delete(userId);
+            client.emit('dndSpeechEnd', userId);
         });
     });
 
