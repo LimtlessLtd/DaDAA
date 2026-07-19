@@ -13,6 +13,7 @@ venv/
 # Transcription and temp data
 chroma_db/
 temp_data/
+.continue/
 
 # Logs and OS artifacts
 npm-debug.log*
