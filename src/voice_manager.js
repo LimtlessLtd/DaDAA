@@ -124,8 +124,13 @@ function joinAndListen(client, guildId, channelId, handler) {
         const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 1, frameSize: 960 });
 
         // Safely catch subscription errors to prevent crashes on network drops
-        audioStream.on('error', (err) => {
+audioStream.on('error', (err) => {
             console.warn(`-> Audio stream error for user ${userId}:`, err.message);
+            // If encryption fails, destroy the stream immediately so we don't spam errors
+            activeStreams.delete(userId);
+            audioStream.destroy();
+            // Emit end so the silence timer can restart
+            client.emit('dndSpeechEnd', userId); 
         });
 
         // Safely catch decoder errors to prevent crashes on corrupted/malformed voice packets

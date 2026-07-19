@@ -117,7 +117,7 @@
       gap: 8px;
       margin-bottom: 12px;
     }
-    .input-group input, .input-group textarea {
+    .input-group input, .input-group textarea, .input-group select {
       background: #0f172a;
       border: 1px solid #334155;
       color: white;
@@ -201,6 +201,32 @@
       <div class="panel">
         <div class="panel-title">Character Logs</div>
         <div id="characterLogsList" style="max-height: 200px; overflow-y: auto;"></div>
+      </div>
+    </div>
+
+    <!-- RAG Vector Search Tester -->
+    <div class="panel" style="margin-top: 16px;">
+      <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; gap: 8px; align-items: center;">
+          Knowledge Base (Vector Search)
+          <span class="status-badge" style="background: #064e3b; color: #34d399; border-color: #047857;">ChromaDB Connected</span>
+        </div>
+        <button id="clearRagBtn" style="background: #b91c1c; padding: 4px 8px; font-size: 0.75rem;">Wipe Database</button>
+      </div>
+      <div class="panel-title">
+        Knowledge Base (Vector Search)
+        <span class="status-badge" style="background: #064e3b; color: #34d399; border-color: #047857;">ChromaDB Connected</span>
+      </div>
+      <div class="input-group" style="flex-direction: row; align-items: center;">
+        <input type="text" id="ragSearchInput" placeholder="Search the AI DM's brain..." style="flex: 1;" />
+        <select id="ragCollectionSelect" style="width: 200px;">
+          <option value="dnd_knowledge">Foundry Lore & State</option>
+          <option value="dnd_transcripts">Live Transcripts</option>
+        </select>
+        <button id="ragSearchBtn" style="white-space: nowrap;">Query Vectors</button>
+      </div>
+      <div id="ragSearchResults" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
+        Enter a query to test semantic retrieval...
       </div>
     </div>
 
@@ -389,13 +415,13 @@
           const ceData = state.currentEventData;
           if (ceData.activeEvent) {
              document.getElementById('currentEventDisplay').innerHTML = `
-                <strong>${escapeHtml(ceData.activeEvent.title)}</strong><br>
-                ${escapeHtml(ceData.activeEvent.description)}<br>
-                <div style="margin-top: 6px; font-size: 0.75rem; color: #94a3b8;">
-                    <strong>Conditions to Clear:</strong>
-                    <ul style="padding-left: 16px; margin: 4px 0;">
-                        ${(ceData.activeEvent.conditionsToClear || []).map(c => `<li>${escapeHtml(c)}</li>`).join('')}
-                    </ul>
+                <strong style="color: #60a5fa; font-size: 0.9rem;">${escapeHtml(ceData.activeEvent.title)}</strong><br>
+                <span style="color: #e2e8f0; display: block; margin-top: 4px;">${escapeHtml(ceData.activeEvent.description)}</span>
+                <div style="margin-top: 8px; padding: 6px; background: rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444; border-radius: 4px; color: #fca5a5;">
+                    <strong>Stakes:</strong> ${escapeHtml(ceData.activeEvent.stakes || 'Unknown')}
+                </div>
+                <div style="margin-top: 6px; padding: 6px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b; border-radius: 4px; color: #fcd34d;">
+                    <strong>Complication:</strong> ${escapeHtml(ceData.activeEvent.complication || 'None')}
                 </div>
              `;
           } else {
@@ -464,22 +490,16 @@
         
         if (entitiesRes.ok) {
           const entities = await entitiesRes.json();
-          
-          // Manage the character input: if there are no foundry characters, expose a free-text input
-          // so users can bind an arbitrary value. Keep the id 'characterNameInput' stable so
-          // bindCharacter() can read .value regardless of element type.
           let actorElem = document.getElementById('characterNameInput');
           const chars = (entities.characters || []);
           const currentActor = actorElem && actorElem.value ? actorElem.value : '';
 
           if (!chars.length) {
-            // Ensure we have an <input> for free-text entry
             if (!actorElem || (actorElem.tagName && actorElem.tagName.toLowerCase() !== 'input')) {
               const input = document.createElement('input');
               input.type = 'text';
               input.id = 'characterNameInput';
               input.placeholder = 'Enter Foundry Actor name';
-              // minimal styling to match other inputs
               input.style.background = '#0f172a';
               input.style.border = '1px solid #334155';
               input.style.color = 'white';
@@ -491,7 +511,6 @@
             }
             actorElem.value = currentActor || '';
           } else {
-            // Ensure we have a <select> populated with available characters
             if (!actorElem || (actorElem.tagName && actorElem.tagName.toLowerCase() !== 'select')) {
               const select = document.createElement('select');
               select.id = 'characterNameInput';
@@ -510,7 +529,6 @@
     }
 
     async function loadData() {
-      // 1. Load AI Memory
       try {
         const memory = await fetch('/temp_data/ai_memory.json').then((r) => r.json());
         const memoryContainer = document.getElementById('memory');
@@ -543,7 +561,6 @@
         document.getElementById('memory').innerHTML = '<div class="item">No insights recorded.</div>';
       }
 
-      // 2. Load Transcript Log
       try {
         const transcriptText = await fetch('/api/transcript_log').then((r) => r.text());
         renderTranscriptLog(transcriptText || '');
@@ -551,13 +568,8 @@
         document.getElementById('transcriptLog').innerHTML = '<div class="item">No live transcript stream found.</div>';
       }
 
-      // 3. Load Session State
       loadSessionStateData();
-
-      // 4. Load Character Logs
       loadCharacterLogs();
-
-      // 5. Load Character Map
       loadCharacterMap();
     }
 
@@ -571,9 +583,7 @@
         return;
       }
 
-      // Sort lines chronologically based on their ISO timestamp [YYYY-MM-DD...]
       lines.sort((a, b) => a.localeCompare(b));
-
       lines = lines.reverse();
       if (!transcriptFullView) {
         lines = lines.slice(0, transcriptPreviewLines);
@@ -605,7 +615,6 @@
           </div>`;
       }).join('');
 
-      // Click to Expand / Collapse long messages
       container.querySelectorAll('.transcript-item').forEach(item => {
         item.addEventListener('click', () => {
           const full = item.getAttribute('data-full');
@@ -638,6 +647,71 @@
       loadData();
     }
 
+    // --- RAG Database Search Integration ---
+    document.getElementById('ragSearchBtn').addEventListener('click', async () => {
+      const query = document.getElementById('ragSearchInput').value;
+      const collection = document.getElementById('ragCollectionSelect').value;
+      const resultsDiv = document.getElementById('ragSearchResults');
+
+      if (!query) return;
+
+      resultsDiv.innerHTML = '<div style="color: #94a3b8;">Searching vector database...</div>';
+
+      try {
+        const res = await fetch('/api/rag_query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, collection })
+        });
+        const data = await res.json();
+
+        if (data.results && data.results.documents && data.results.documents[0] && data.results.documents[0].length > 0) {
+          const docs = data.results.documents[0];
+          const metas = data.results.metadatas[0];
+
+          resultsDiv.innerHTML = docs.map((doc, i) => {
+            const meta = metas[i] || {};
+            const source = escapeHtml(meta.name || meta.source || 'Unknown');
+            const category = meta.category ? `<span style="color: #f59e0b; font-size: 0.7rem; text-transform: uppercase; margin-right: 6px;">${escapeHtml(meta.category)}</span>` : '';
+            return `
+              <div style="margin-bottom: 12px; border-bottom: 1px solid #334155; padding-bottom: 8px;">
+                <div style="margin-bottom: 4px;">${category}<strong style="color: #3b82f6;">${source}</strong></div>
+                <div style="color: #cbd5e1;">${escapeHtml(doc)}</div>
+              </div>
+            `;
+          }).join('');
+        } else {
+          resultsDiv.innerHTML = '<div style="color: #ef4444;">No semantic matches found.</div>';
+        }
+      } catch (e) {
+        resultsDiv.innerHTML = `<div style="color: #ef4444;">Error: ${e.message}</div>`;
+      }
+    });
+
+    document.getElementById('clearRagBtn').addEventListener('click', async () => {
+      if (!confirm("Are you sure you want to wipe the RAG database? You must restart the bot afterward to re-sync Foundry data.")) return;
+      
+      const btn = document.getElementById('clearRagBtn');
+      const originalText = btn.innerText;
+      btn.innerText = 'Wiping...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/rag_clear', { method: 'POST' });
+        if (res.ok) {
+          alert('Database wiped cleanly! Restart your bot to start fresh.');
+          document.getElementById('ragSearchResults').innerHTML = '<div style="color: #10b981;">Database wiped clean.</div>';
+        } else {
+          alert('Failed to wipe database.');
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+      } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+      }
+    });
+
     document.getElementById('generateEventBtn').addEventListener('click', generateCurrentEvent);
     document.getElementById('bindCharacterBtn').addEventListener('click', bindCharacter);
     document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
@@ -669,7 +743,7 @@
           document.getElementById('debugResponseSection').innerText = JSON.stringify(rawResponse, null, 2);
         }
       } catch (e) {
-        // file doesn't exist yet, ignore silently
+        // file doesn't exist yet
       }
     }
 
@@ -680,7 +754,7 @@
       if (debugModeActive) {
         debugPanel.style.display = 'block';
         btn.innerText = 'Hide Debug Mode';
-        btn.style.background = '#ef4444'; // Red highlighting when active
+        btn.style.background = '#ef4444';
         loadDebugData();
       } else {
         debugPanel.style.display = 'none';
@@ -703,17 +777,13 @@
 
     document.getElementById('debugToggleBtn').addEventListener('click', toggleDebugMode);
 
-    // Initial setup
     setInterval(() => {
       loadData();
-      if (debugModeActive) {
-        loadDebugData();
-      }
-    }, 3000); // Polling every 3 seconds for snap response times
+      if (debugModeActive) loadDebugData();
+    }, 3000);
     setInterval(loadCharacterLogs, 5000);
     setInterval(populateDropdowns, 10000);
     
-    // Initial fetch
     loadData();
     loadCharacterMap();
     loadSessionStateData();

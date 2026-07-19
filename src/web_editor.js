@@ -2,7 +2,17 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { getAllWorldData } = require('./data_manager');
-const { buildKnowledgeIndex, loadRelationships, saveRelationships, addRelationship, initializeWorldContext, migrateRelationships, loadSessionState, saveSessionState, readTranscriptLog } = require('./context_manager');
+const { 
+    callRagServer, // <-- ADDED: Needed for proxy and search
+    loadRelationships, 
+    saveRelationships, 
+    addRelationship, 
+    initializeWorldContext, 
+    migrateRelationships, 
+    loadSessionState, 
+    saveSessionState, 
+    readTranscriptLog 
+} = require('./context_manager');
 const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote } = require('./session_manager');
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('./character_manager');
 const { getRollingSummary } = require('./ai_helper');
@@ -12,41 +22,48 @@ const UI_ROOT = path.join(__dirname, '..', 'UI');
 const TEMP_DATA_ROOT = path.join(__dirname, '..', 'temp_data');
 const PORT = Number(process.env.DA_DAA_PORT || 8000);
 
-function formatRecordLabel(record) {
-    const name = record.name || record.title || record.label || record._id || 'Unnamed';
-    return `${record.category || 'unknown'}: ${name}`;
-}
-
-async function loadRecordIndex() {
-    const worldData = await getAllWorldData();
-    return buildKnowledgeIndex(worldData);
-}
-
-function searchRecords(knowledgeIndex, query = '') {
+// CHANGED: Records search now queries ChromaDB directly instead of a memory array
+async function searchRecords(query = '', categoryFilter = null) {
     const normalized = String(query).trim().toLowerCase();
-    const records = Array.from(knowledgeIndex.records || []);
-
+    
+    // If no query, we can't easily do a vector search for "everything". 
+    // Return empty or rely on a different UI mechanism.
     if (!normalized) {
-        return records.slice(0, 80).map((record) => ({
-            id: record._id,
-            label: formatRecordLabel(record),
-            category: record.category,
-            name: record.name || record.title || record._id,
-        }));
+        return [];
     }
 
-    return records
-        .filter((record) => {
-            const label = formatRecordLabel(record).toLowerCase();
-            return label.includes(normalized);
-        })
-        .slice(0, 80)
-        .map((record) => ({
-            id: record._id,
-            label: formatRecordLabel(record),
-            category: record.category,
-            name: record.name || record.title || record._id,
-        }));
+    try {
+        const response = await callRagServer('/query', {
+            collection: 'dnd_knowledge',
+            query_texts: [normalized],
+            n_results: 80
+        });
+
+        if (response.results && response.results.ids && response.results.ids[0]) {
+            const ids = response.results.ids[0];
+            const metas = response.results.metadatas[0];
+
+            let results = ids.map((id, index) => {
+                const meta = metas[index] || {};
+                return {
+                    id: id,
+                    label: `${meta.category || 'unknown'}: ${meta.name || 'Unnamed'}`,
+                    category: meta.category,
+                    name: meta.name || id
+                };
+            });
+
+            if (categoryFilter) {
+                results = results.filter(r => String(r.category) === String(categoryFilter));
+            }
+
+            return results;
+        }
+    } catch (e) {
+        console.warn('-> Web Editor Search failed:', e.message);
+    }
+    
+    return [];
 }
 
 function readJsonBody(req) {
@@ -136,6 +153,24 @@ function startWebEditor() {
             }
         }
 
+        // NEW: The proxy endpoint so the dashboard can search the Vector DB directly
+        if (pathname === '/api/rag_query') {
+            if (req.method === 'POST') {
+                try {
+                    const payload = await readJsonBody(req);
+                    const response = await callRagServer('/query', {
+                        collection: payload.collection || 'dnd_knowledge',
+                        query_texts: [payload.query],
+                        n_results: 3
+                    });
+                    sendJson(res, 200, response);
+                } catch (err) {
+                    sendJson(res, 500, { error: err.message });
+                }
+                return;
+            }
+        }
+
         if (pathname === '/api/health') {
             sendJson(res, 200, { ok: true });
             return;
@@ -168,6 +203,9 @@ function startWebEditor() {
                         }
                     });
 
+                    // Clear the RAG Transcript Collection
+                    await callRagServer('/clear', { collection: 'dnd_transcripts' }).catch(() => {});
+
                     console.log('-> Local campaign session data has been purged successfully.');
                     sendJson(res, 200, { ok: true, message: 'All local session data has been purged.' });
                 } catch (error) {
@@ -177,31 +215,35 @@ function startWebEditor() {
             }
         }
 
+        // CHANGED: Uses RAG search now
         if (pathname === '/api/records') {
             try {
-                const knowledgeIndex = await loadRecordIndex();
                 const query = url.searchParams.get('query') || '';
                 const category = url.searchParams.get('category') || null;
-                let results = searchRecords(knowledgeIndex, query);
-                if (category) {
-                    results = results.filter((r) => String(r.category) === String(category)).slice(0, 200);
-                }
+                const results = await searchRecords(query, category);
                 sendJson(res, 200, results);
             } catch (error) {
                 sendJson(res, 500, { error: error.message });
             }
             return;
         }
+
+        // CHANGED: Categories are fetched from the JSON file dumped during init, not memory
         if (pathname === '/api/categories') {
             try {
-                const knowledgeIndex = await loadRecordIndex();
-                const cats = Array.from((knowledgeIndex.categories || new Map()).entries()).map(([k, v]) => ({ category: k, count: (v || []).length }));
-                sendJson(res, 200, cats.sort((a, b) => b.count - a.count));
+                const catsPath = path.join(TEMP_DATA_ROOT, 'categories.json');
+                if (fs.existsSync(catsPath)) {
+                    sendJson(res, 200, JSON.parse(fs.readFileSync(catsPath, 'utf8')));
+                } else {
+                    sendJson(res, 200, []);
+                }
             } catch (e) {
                 sendJson(res, 500, { error: e.message });
             }
             return;
         }
+
+        // CHANGED: Record fetching utilizes the fast ID lookup cache from context_manager.js if possible
         if (pathname === '/api/record') {
             try {
                 const id = url.searchParams.get('id');
@@ -209,22 +251,21 @@ function startWebEditor() {
                     sendJson(res, 400, { error: 'id required' });
                     return;
                 }
-                const knowledgeIndex = await loadRecordIndex();
-                // Some LevelDB keys can be strings — fall back to scanning records array if Map lookup fails
-                let rec = null;
-                try {
-                    rec = knowledgeIndex.byId && knowledgeIndex.byId.get && knowledgeIndex.byId.get(id);
-                } catch (e) {
-                    rec = null;
-                }
-                if (!rec) {
-                    rec = (knowledgeIndex.records || []).find((r) => String(r._id) === String(id));
-                }
-                if (!rec) {
+                
+                // We rely on getAllWorldData because we need the raw object
+                const worldData = await getAllWorldData();
+                let foundRecord = null;
+                Object.values(worldData).forEach(categoryArray => {
+                    if (foundRecord) return;
+                    const match = categoryArray.find(r => r._id === id);
+                    if (match) foundRecord = match;
+                });
+
+                if (!foundRecord) {
                     sendJson(res, 404, { error: 'record not found' });
                     return;
                 }
-                sendJson(res, 200, rec);
+                sendJson(res, 200, foundRecord);
             } catch (error) {
                 sendJson(res, 500, { error: error.message });
             }
@@ -241,7 +282,6 @@ function startWebEditor() {
                 try {
                     const payload = await readJsonBody(req);
                     const relationships = loadRelationships();
-                    // payload may include sourceId/targetId from the UI
                     const entry = addRelationship(
                         relationships,
                         payload.source,
@@ -261,19 +301,9 @@ function startWebEditor() {
         if (url.pathname === '/api/refresh') {
             if (req.method === 'POST') {
                 try {
-                    const { worldData, knowledgeIndex, relationships } = await initializeWorldContext();
-                    // attempt migration to enrich relationships with ids
-                    const mig = migrateRelationships(knowledgeIndex);
-                    // write categories to temp_data for UI fallback
-                    try {
-                        const cats = Array.from((knowledgeIndex.categories || new Map()).entries()).map(([k, v]) => ({ category: k, count: (v || []).length }));
-                        const categoriesPath = path.join(TEMP_DATA_ROOT, 'categories.json');
-                        fs.mkdirSync(TEMP_DATA_ROOT, { recursive: true });
-                        fs.writeFileSync(categoriesPath, JSON.stringify(cats.sort((a, b) => b.count - a.count), null, 2));
-                    } catch (e) {
-                        // ignore
-                    }
-                    sendJson(res, 200, { ok: true, records: knowledgeIndex.records.length, relationships: relationships.length, migrated: mig.migrated });
+                    const { relationships } = await initializeWorldContext();
+                    const mig = migrateRelationships();
+                    sendJson(res, 200, { ok: true, relationships: relationships.length, migrated: mig.migrated });
                 } catch (e) {
                     sendJson(res, 500, { error: e.message });
                 }
@@ -442,6 +472,20 @@ function startWebEditor() {
                 sendJson(res, 200, loadCharacterLogs());
                 return;
             }
+        }
+
+        if (req.method === 'POST' && pathname === '/api/rag_clear') {
+            try {
+                const { callRagServer } = require('./context_manager');
+                await callRagServer('/clear', { collection: 'dnd_knowledge' });
+                await callRagServer('/clear', { collection: 'dnd_transcripts' });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'success' }));
+            } catch (e) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: e.message }));
+            }
+            return;
         }
 
         const staticPath = resolveStaticPath(url.pathname);

@@ -23,8 +23,6 @@ def normalize_audio(samples):
     if samples.size == 0:
         return samples
     peak = np.max(np.abs(samples))
-    # If the whole clip is extremely quiet, do NOT normalize it.
-    # Unconditional normalization of silent clips scales mic hum/noise to 100%, causing Whisper hallucinations.
     if peak < 0.015:
         return samples
     return samples / peak * 0.9
@@ -36,19 +34,16 @@ def resample_to_16k(samples, source_rate=48000, target_rate=16000):
     if source_rate % target_rate != 0:
         return samples
     try:
-        # decimate applies a low-pass Chebyshev anti-aliasing filter before downsampling
         return signal.decimate(samples, step, ftype='iir')
     except Exception:
-        # Fallback to simple slicing if decimate fails
         return samples[::step]
 
 def run_transcription(full_audio):
-    # Guide spelling of fantasy nouns and gaming terms with a helpful initial prompt
     initial_prompt = "D&D, Dungeons and Dragons, RPG, tabletop, Dungeon Master, DM, Foundry VTT, spell, dice roll, d20, combat."
     segments, _ = model.transcribe(
         full_audio,
-        beam_size=3,                 # Excellent sweet spot of speed and accuracy
-        language="en",               # Force English to avoid false-language detection on fantasy names
+        beam_size=3,
+        language="en",
         initial_prompt=initial_prompt,
         condition_on_previous_text=False
     )
@@ -57,27 +52,20 @@ def run_transcription(full_audio):
 async def audio_handler(websocket):
     user_id = None
     audio_buffer = []
-    
-    # Accumulate downsampled 16kHz audio samples here
     vad_accumulator = np.array([], dtype=np.float32)
-    
-    # Track consecutive silence to trigger stops on active continuous streams
     consecutive_silence_frames = 0
     
-    # Tuning Constants
-    CHUNK_SIZE = 512              # 32ms at 16kHz
-    SILENCE_LIMIT_FRAMES = 35     # 35 * 32ms = 1120ms of continuous silence before transcribing
-    MIN_SPEECH_FRAMES = 10        # 10 * 32ms = 320ms of speech minimum to prevent static/mic bumps
-    TIMEOUT_SECONDS = 0.8         # 0.8 seconds of packet absence before triggering fallback transcription
-    VAD_THRESHOLD = 0.4           # Standard threshold for Silero VAD to ignore minor background hiss
+    CHUNK_SIZE = 512
+    SILENCE_LIMIT_FRAMES = 35
+    MIN_SPEECH_FRAMES = 10
+    TIMEOUT_SECONDS = 0.8
+    VAD_THRESHOLD = 0.4
 
     try:
         while True:
             try:
-                # Wait for the next packet or assume silence if the stream halts
                 message = await asyncio.wait_for(websocket.recv(), timeout=TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                # CASE A: Discord stopped sending packets (User stopped speaking)
                 if len(audio_buffer) >= MIN_SPEECH_FRAMES:
                     full_audio = np.concatenate(audio_buffer)
                     full_audio = normalize_audio(full_audio)
@@ -102,23 +90,15 @@ async def audio_handler(websocket):
                 continue
 
             if isinstance(message, (bytes, bytearray)) and user_id:
-                # 1. Convert to float32 using standard 16-bit scaling
                 raw_audio = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
-                
-                # 2. Downsample to 16kHz
                 raw_audio_16k = resample_to_16k(raw_audio)
-                
-                # 3. Add to our VAD accumulator
                 vad_accumulator = np.concatenate([vad_accumulator, raw_audio_16k])
                 
-                # 4. Process all complete 512-sample frames in the accumulator
                 while len(vad_accumulator) >= CHUNK_SIZE:
                     frame = vad_accumulator[:CHUNK_SIZE]
                     vad_accumulator = vad_accumulator[CHUNK_SIZE:]
                     
                     audio_tensor = torch.from_numpy(frame).unsqueeze(0)
-                    
-                    # Run Silero VAD without tracking gradients to prevent memory leaks
                     with torch.no_grad():
                         speech_prob = vad_model(audio_tensor, 16000).item()
 
@@ -126,9 +106,8 @@ async def audio_handler(websocket):
                         audio_buffer.append(frame)
                         consecutive_silence_frames = 0
                     else:
-                        # CASE B: Client keeps sending packets, but they are quiet
                         if len(audio_buffer) > 0:
-                            audio_buffer.append(frame)  # Keep trailing silence so Whisper has pacing
+                            audio_buffer.append(frame)
                             consecutive_silence_frames += 1
                             
                             if consecutive_silence_frames >= SILENCE_LIMIT_FRAMES:
@@ -141,7 +120,6 @@ async def audio_handler(websocket):
                                         print(f"-> Transcription ({user_id}): {transcript_text}")
                                         await websocket.send(json.dumps({"userId": user_id, "text": transcript_text}))
                                 
-                                # Reset buffers
                                 audio_buffer = []
                                 consecutive_silence_frames = 0
 
@@ -150,7 +128,7 @@ async def audio_handler(websocket):
 
 async def main():
     async with websockets.serve(audio_handler, "127.0.0.1", 8765, ping_interval=None, ping_timeout=None):
-        print("-> Transcription server running with forced 512-sample VAD framing")
+        print("-> Transcription server running (Voice Only)")
         await asyncio.Future()
 
 if __name__ == "__main__":

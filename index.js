@@ -6,7 +6,15 @@ const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinAndListen, speakText } = require('./src/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
-const { initializeWorldContext, appendTranscript, readTranscriptLog, buildDmSuggestion, loadSessionState, saveSessionState } = require('./src/context_manager');
+const { 
+    initializeWorldContext, 
+    appendTranscript, 
+    readTranscriptLog, 
+    buildDmSuggestion, 
+    loadSessionState, 
+    saveSessionState,
+    findRelevantRecords
+} = require('./src/context_manager');
 const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai_helper');
 const { buildPrompt, callModel, generateNextEvent } = require('./src/ai_provider');
 const { startWebEditor } = require('./src/web_editor');
@@ -64,11 +72,11 @@ async function handleSilenceDriver() {
     console.log('-> Sustained silence detected. Prompting DM AI to drive the narrative...');
     if (!worldContext) return;
 
-    // Treat silence as a "blank" transcript
     const fakeTranscript = "(Players are silent and awaiting the Dungeon Master's lead)";
     
-    const summary = summarizeTranscript(fakeTranscript, worldContext.knowledgeIndex);
+    const relevantRecords = await findRelevantRecords(fakeTranscript);
     const sessionState = loadSessionState();
+    
     let currentEventString = '';
     const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
     let currentEventData = { activeEvent: null, archivedEvents: [] };
@@ -76,14 +84,16 @@ async function handleSilenceDriver() {
         try {
             currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
             if (currentEventData.activeEvent) {
-                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\n${currentEventData.activeEvent.description}\nConditions: ${currentEventData.activeEvent.conditionsToClear?.join(', ')}`;
+                // FIXED: Now properly passes Stakes and Complications to the LLM
+                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}`;
             }
         } catch(e) {}
     }
+    
     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
     `.trim();
 
     const rollingSummary = getRollingSummary();
@@ -116,49 +126,60 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
         if (aiReply) {
             console.log(`-> AI Silence evaluation: [Important: ${aiReply.isImportant}] Suggestion: ${aiReply.suggestion || 'None'}`);
             
-            const isImportantInsight = aiReply.suggestion && !aiReply.isOOC; // Ignore importance flag for silence, force narrative
+            if (aiReply.spokenNarrative) {
+                console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
+                speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
+                
+                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
+            }
+
+            const isImportantInsight = aiReply.suggestion && !aiReply.isOOC;
             if (isImportantInsight) {
                 stats.importantInsights++;
                 rememberAiInsight(aiReply, "Silence");
                 sendDmToOwner(`DM guidance (Silence Driver):\n${aiReply.suggestion}`);
-                
-                if (aiReply.spokenNarrative) {
-                    console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
-                    speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
-                }
             }
 
             if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
                 addCharacterLogs(aiReply.characterLogs);
             }
 
-            if (aiReply.eventResolved && currentEventData.activeEvent) {
-                console.log(`-> Active Event Resolved (Silence Driver): ${currentEventData.activeEvent.title}`);
-                sendDmToOwner(`Event Cleared: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
-                
-                currentEventData.archivedEvents.push({
-                    title: currentEventData.activeEvent.title,
-                    resolution: aiReply.resolutionSummary
-                });
-                if (currentEventData.archivedEvents.length > 100) {
-                    currentEventData.archivedEvents.shift();
-                }
-                
-                currentEventData.activeEvent = null;
-                fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+            if (currentEventData.activeEvent && aiReply.eventStatus) {
+                const status = aiReply.eventStatus.toLowerCase();
+                console.log(`-> Event Evaluation [${currentEventData.activeEvent.title}]: ${status.toUpperCase()}`);
 
-                console.log('-> Generating new Active Event (Silence Driver)...');
-                generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
-                    .then(newEventObj => {
-                        if (newEventObj && newEventObj.activeEvent) {
-                            currentEventData.activeEvent = newEventObj.activeEvent;
-                            fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                            console.log(`-> New Active Event Created: ${newEventObj.activeEvent.title}`);
-                            sendDmToOwner(`New Event: ${newEventObj.activeEvent.title}\n${newEventObj.activeEvent.description}`);
-                        }
-                    }).catch(err => {
-                        console.error('-> Failed to generate new event:', err);
+                if (status === 'resolved') {
+                    console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
+                    sendDmToOwner(`🎉 Event Resolved: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
+                    
+                    currentEventData.archivedEvents.push({
+                        title: currentEventData.activeEvent.title,
+                        resolution: aiReply.resolutionSummary,
+                        endedAt: new Date().toISOString()
                     });
+                    currentEventData.activeEvent = null;
+                    fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                    generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
+                        .then(newEventObj => {
+                            if (newEventObj && newEventObj.activeEvent) {
+                                currentEventData.activeEvent = newEventObj.activeEvent;
+                                fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                                sendDmToOwner(`New Event Triggered: ${newEventObj.activeEvent.title}`);
+                            }
+                        }).catch(err => console.error('-> Failed to generate new event:', err));
+
+                } else if (status === 'escalated' || status === 'evolved') {
+                    console.log(`-> Event Morphing: Updating stakes/complications.`);
+                    
+                    currentEventData.activeEvent.description = aiReply.updatedEventDescription || currentEventData.activeEvent.description;
+                    currentEventData.activeEvent.complication = aiReply.updatedComplication || currentEventData.activeEvent.complication;
+                    currentEventData.activeEvent.stakes = aiReply.updatedStakes || currentEventData.activeEvent.stakes;
+                    
+                    fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                    
+                    sendDmToOwner(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title}\nNew Twist: ${currentEventData.activeEvent.complication}`);
+                }
             }
             
             saveLlmDebug({
@@ -177,13 +198,11 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
         console.warn('-> Silence Driver AI provider unavailable:', error.message);
     }
     
-    // Automatically restart the timer for the next gap of silence
     if (silenceTimer) clearTimeout(silenceTimer);
     silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
 }
 
 async function sendDmToOwner(content) {
-    // Discord DM messaging disabled per user request
     return;
 }
 
@@ -192,10 +211,8 @@ client.once('clientReady', () => {
     startWebEditor();
     
     const activeModel = config.LLM;
-
     const hasKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
 
-    // Write initial telemetry state so the debug panel doesn't appear empty at startup
     saveLlmDebug({
         timestamp: new Date().toISOString(),
         model: activeModel,
@@ -215,7 +232,7 @@ client.once('clientReady', () => {
     initializeWorldContext()
         .then((context) => {
             worldContext = context;
-            console.log(`-> Loaded ${context.knowledgeIndex.records.length} local records into context.`);
+            console.log(`-> Local World Context and ChromaDB RAG Engine initialized successfully.`);
         })
         .catch((error) => {
             console.error('-> Failed to load world context:', error);
@@ -224,8 +241,6 @@ client.once('clientReady', () => {
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
-
-    console.log('-> Message received:', message.content);
 
     if (message.content === '!join') {
         const voiceChannel = message.member?.voice?.channel;
@@ -239,12 +254,13 @@ client.on('messageCreate', async (message) => {
                     }
                 } catch (e) { /* fallback to id */ }
                 
+                console.log(`\n[Audio Transcribed] ${sourceLabel}: "${transcript}"`);
+
                 recordDiscordUser(sourceLabel);
                 appendTranscript(transcript, sourceLabel, startTime);
                 
                 stats.totalUtterances++;
                 
-                // Every 10 voice transcriptions, trigger a background update of the rolling session summary.
                 transcriptCounter++;
                 if (transcriptCounter >= 10) {
                     transcriptCounter = 0;
@@ -255,13 +271,11 @@ client.on('messageCreate', async (message) => {
                     }
                 }
                 
-                // --- RESET SILENCE TIMER ---
                 lastSpeechTimestamp = Date.now();
                 if (silenceTimer) {
                     clearTimeout(silenceTimer);
                     silenceTimer = null;
                 }
-                // Only restart the timer if no one is currently talking
                 if (activeSpeakers.size === 0) {
                     silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
                 }
@@ -276,8 +290,7 @@ client.on('messageCreate', async (message) => {
                         sendDmToOwner(`Session reminder triggered:\n${dmBody}`);
                     }
 
-                    // UPDATED: No relationships argument
-                    const summary = summarizeTranscript(transcript, worldContext.knowledgeIndex);
+                    const relevantRecords = await findRelevantRecords(transcript);
 
                     const sessionState = loadSessionState();
                     let currentEventString = '';
@@ -287,14 +300,16 @@ client.on('messageCreate', async (message) => {
                         try {
                             currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
                             if (currentEventData.activeEvent) {
-                                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\n${currentEventData.activeEvent.description}\nConditions: ${currentEventData.activeEvent.conditionsToClear?.join(', ')}`;
+                                // FIXED: Matches the new Stakes/Complication format
+                                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}`;
                             }
                         } catch(e) {}
                     }
+                    
                     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
                     `.trim();
 
                     const rollingSummary = getRollingSummary();
@@ -304,7 +319,6 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                     
                     const activeModelName = config.LLM || 'Unknown Model';
 
-                    // Immediately write "Analyzing..." status so the user knows the AI is actively thinking!
                     saveLlmDebug({
                         timestamp: new Date().toISOString(),
                         model: activeModelName,
@@ -326,59 +340,65 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                             stats.lastLatencyMs = latency;
                             
                             if (aiReply) {
-                                // NEW: Log EVERYTHING, even if unimportant, so you know the AI is alive
                                 console.log(`-> AI DM evaluation: [OOC: ${aiReply.isOOC}] [Important: ${aiReply.isImportant}] Suggestion: ${aiReply.suggestion || 'None'}`);
                                 
+                                if (aiReply.spokenNarrative) {
+                                    console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
+                                    speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
+                                    
+                                    appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
+                                }
+
                                 const isImportantInsight = aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant;
                                 if (isImportantInsight) {
                                     stats.importantInsights++;
                                     rememberAiInsight(aiReply, transcript);
                                     sendDmToOwner(`DM guidance:\n${aiReply.suggestion}`);
-                                    
-                                    if (aiReply.spokenNarrative) {
-                                        console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
-                                        speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
-                                    }
                                 }
 
                                 if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
                                     addCharacterLogs(aiReply.characterLogs);
                                 }
 
-                                if (aiReply.eventResolved && currentEventData.activeEvent) {
-                                    console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
-                                    sendDmToOwner(`Event Cleared: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
-                                    
-                                    currentEventData.archivedEvents.push({
-                                        title: currentEventData.activeEvent.title,
-                                        resolution: aiReply.resolutionSummary
-                                    });
-                                    // keep only last 100 archived events to avoid bloating context
-                                    if (currentEventData.archivedEvents.length > 100) {
-                                        currentEventData.archivedEvents.shift();
-                                    }
-                                    
-                                    // Save the archived state first so UI updates immediately
-                                    const oldTitle = currentEventData.activeEvent.title;
-                                    currentEventData.activeEvent = null;
-                                    fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                                // FIXED: Replaced the old eventResolved logic with the new eventStatus logic
+                                if (currentEventData.activeEvent && aiReply.eventStatus) {
+                                    const status = aiReply.eventStatus.toLowerCase();
+                                    console.log(`-> Event Evaluation [${currentEventData.activeEvent.title}]: ${status.toUpperCase()}`);
 
-                                    // Trigger next event generation
-                                    console.log('-> Generating new Active Event...');
-                                    generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
-                                        .then(newEventObj => {
-                                            if (newEventObj && newEventObj.activeEvent) {
-                                                currentEventData.activeEvent = newEventObj.activeEvent;
-                                                fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                                console.log(`-> New Active Event Created: ${newEventObj.activeEvent.title}`);
-                                                sendDmToOwner(`New Event: ${newEventObj.activeEvent.title}\n${newEventObj.activeEvent.description}`);
-                                            }
-                                        }).catch(err => {
-                                            console.error('-> Failed to generate new event:', err);
+                                    if (status === 'resolved') {
+                                        console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
+                                        sendDmToOwner(`🎉 Event Resolved: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
+                                        
+                                        currentEventData.archivedEvents.push({
+                                            title: currentEventData.activeEvent.title,
+                                            resolution: aiReply.resolutionSummary,
+                                            endedAt: new Date().toISOString()
                                         });
+                                        currentEventData.activeEvent = null;
+                                        fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                                        generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
+                                            .then(newEventObj => {
+                                                if (newEventObj && newEventObj.activeEvent) {
+                                                    currentEventData.activeEvent = newEventObj.activeEvent;
+                                                    fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                                                    sendDmToOwner(`New Event Triggered: ${newEventObj.activeEvent.title}`);
+                                                }
+                                            }).catch(err => console.error('-> Failed to generate new event:', err));
+
+                                    } else if (status === 'escalated' || status === 'evolved') {
+                                        console.log(`-> Event Morphing: Updating stakes/complications.`);
+                                        
+                                        currentEventData.activeEvent.description = aiReply.updatedEventDescription || currentEventData.activeEvent.description;
+                                        currentEventData.activeEvent.complication = aiReply.updatedComplication || currentEventData.activeEvent.complication;
+                                        currentEventData.activeEvent.stakes = aiReply.updatedStakes || currentEventData.activeEvent.stakes;
+                                        
+                                        fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                                        
+                                        sendDmToOwner(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title}\nNew Twist: ${currentEventData.activeEvent.complication}`);
+                                    }
                                 }
                                 
-                                // Save full debug telemetry
                                 saveLlmDebug({
                                     timestamp: new Date().toISOString(),
                                     model: activeModelName,
@@ -391,7 +411,6 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
                                     stats: stats
                                 });
                             } else {
-                                // Save empty/error telemetry when model returns null (e.g. unconfigured key)
                                 saveLlmDebug({
                                     timestamp: new Date().toISOString(),
                                     model: activeModelName,
@@ -434,7 +453,6 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
             });
             message.reply('Listening to the channel!');
             
-            // --- START INITIAL SILENCE TIMER ---
             lastSpeechTimestamp = Date.now();
             if (silenceTimer) clearTimeout(silenceTimer);
             silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
@@ -450,7 +468,6 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
         if (connection) {
             connection.destroy();
             message.reply('Disconnected from voice channel.');
-            // --- CLEAR SILENCE TIMER ---
             if (silenceTimer) {
                 clearTimeout(silenceTimer);
                 silenceTimer = null;
@@ -481,22 +498,21 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
             .join(' ') || 'No transcript yet.';
 
         const sessionState = loadSessionState();
-        // UPDATED: No relationships argument
-        const summary = summarizeTranscript(latestTranscript, worldContext.knowledgeIndex);
+        
+        const relevantRecords = await findRelevantRecords(latestTranscript);
         
         const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
         `.trim();
 
         const rollingSummary = getRollingSummary();
         const prompt = buildPrompt(latestTranscript, contextString, rollingSummary);
         callModel(prompt)
             .then((aiReply) => {
-                const reply = aiReply?.suggestion || summary.advice;
+                const reply = aiReply?.suggestion || 'No relevant context to provide.';
                 message.reply(reply);
-                sendDmToOwner(`Context request:\n${reply}`);
             });
         return;
     }
@@ -509,7 +525,6 @@ Foundry Records: ${summary.relevantRecords.map((record) => `${record.category}: 
 
 client.on('dndSpeechStart', (userId) => {
     activeSpeakers.add(userId);
-    // Pause the silence timer because someone is talking
     if (silenceTimer) {
         clearTimeout(silenceTimer);
         silenceTimer = null;
@@ -518,7 +533,6 @@ client.on('dndSpeechStart', (userId) => {
 
 client.on('dndSpeechEnd', (userId) => {
     activeSpeakers.delete(userId);
-    // If no one else is talking, restart the silence timer
     if (activeSpeakers.size === 0) {
         lastSpeechTimestamp = Date.now();
         if (silenceTimer) {

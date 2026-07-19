@@ -1,5 +1,7 @@
-# Node modules
+# Dependencies
 node_modules/
+__pycache__/
+*.pyc
 
 # Environment files
 .env
@@ -7,7 +9,9 @@ node_modules/
 # Python virtual environment
 .venv/
 venv/
+
 # Transcription and temp data
+chroma_db/
 temp_data/
 
 # Logs and OS artifacts
@@ -24,3 +28,4 @@ Thumbs.db
 
 # Editor directories
 .vscode/
+

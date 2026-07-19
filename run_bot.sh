@@ -2,21 +2,8 @@
 set -euo pipefail
 
 # run_bot.sh - Linux/Unix equivalent to run_bot.bat
-# - Change to the script directory
-# - Prefer .venv/bin/python if present, otherwise python3 or python
-# - Ensure Node.js is available
-# - Kill stale processes listening on ports (matching server filenames)
-# - Start transcription server (server.py) and bot (index.js) in background
-# - Open dashboard URL in default browser where possible
 
 cd "$(dirname "$0")"
-
-# install all required NPM packages (if not already installed)
-npm install
-
-sudo apt install -y \
-    espeak-ng \
-    libespeak-ng1 \
 
 # Helper: find and kill processes listening on a given port whose command line contains a match string
 cleanup_port() {
@@ -66,36 +53,38 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-# Warn if .env appears missing expected variables (does not source it)
-if [ -f .env ]; then
-  if ! grep -q '^DISCORD_BOT_TOKEN=' .env || ! grep -q '^BOT_OWNER_ID=' .env; then
-    echo "WARNING: .env exists but may be missing DISCORD_BOT_TOKEN or BOT_OWNER_ID"
-  fi
-else
-  echo "WARNING: .env not found. Ensure DISCORD_BOT_TOKEN and BOT_OWNER_ID are set (or available via your shell environment)."
-fi
+echo "Checking for stale RAG server on port 8766..."
+cleanup_port 8766 rag_server.py
 
-# Attempt to stop stale servers (matches behavior of original batch file)
 echo "Checking for stale transcription server on port 8765..."
 cleanup_port 8765 server.py
 
 echo "Checking for stale bot server on port 8000..."
 cleanup_port 8000 index.js
 
-# Start servers in background and write logs
+# Ensure logs directory exists
+mkdir -p logs
+
+echo "Starting RAG Server..."
+"${PYTHON_EXE}" rag_server.py > logs/rag_server.log 2>&1 &
+RAG_PID=$!
+if command -v disown >/dev/null 2>&1; then disown ${RAG_PID} 2>/dev/null || true; fi
+
+echo "Waiting for RAG server to initialize..."
+sleep 5
+
+echo "Starting RAG Ingestion Script..."
+"${PYTHON_EXE}" rag_ingest.py > logs/rag_ingest.log 2>&1 &
+INGEST_PID=$!
+if command -v disown >/dev/null 2>&1; then disown ${INGEST_PID} 2>/dev/null || true; fi
+
+echo "Waiting for RAG ingestion script to initialize..."
+sleep 5
+
 echo "Starting Transcription Server..."
 "${PYTHON_EXE}" server.py > logs/transcription.log 2>&1 &
 TRANS_PID=$!
-# Try to disown so it survives closing the terminal
-if command -v disown >/dev/null 2>&1; then
-  disown ${TRANS_PID} 2>/dev/null || true
-fi
-sleep 1
-if kill -0 ${TRANS_PID} 2>/dev/null; then
-  echo "Transcription server started (PID ${TRANS_PID}), log: transcription.log"
-else
-  echo "Failed to start transcription server; check transcription.log"
-fi
+if command -v disown >/dev/null 2>&1; then disown ${TRANS_PID} 2>/dev/null || true; fi
 
 echo "Waiting for transcription server to initialize..."
 sleep 5
@@ -103,21 +92,12 @@ sleep 5
 echo "Starting DaDAA Bot..."
 node index.js > logs/bot.log 2>&1 &
 BOT_PID=$!
-if command -v disown >/dev/null 2>&1; then
-  disown ${BOT_PID} 2>/dev/null || true
-fi
-sleep 1
-if kill -0 ${BOT_PID} 2>/dev/null; then
-  echo "DaDAA Bot started (PID ${BOT_PID}), log: bot.log"
-else
-  echo "Failed to start DaDAA Bot; check bot.log"
-fi
+if command -v disown >/dev/null 2>&1; then disown ${BOT_PID} 2>/dev/null || true; fi
 
 echo "Waiting for dashboard server to initialize..."
 sleep 5
 
 DASH_URL="http://localhost:8000/dashboard.html"
-# Try to open default browser if possible
 if command -v xdg-open >/dev/null 2>&1; then
   xdg-open "${DASH_URL}" >/dev/null 2>&1 || true
 elif command -v gnome-open >/dev/null 2>&1; then

@@ -14,11 +14,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Checking for stale RAG server on port 8766...
+call :CleanupPort 8766 rag_server.py
+
 echo Checking for stale transcription server on port 8765...
 call :CleanupPort 8765 server.py
 
 echo Checking for stale bot server on port 8000...
 call :CleanupPort 8000 index.js
+
+start "RAG Server" cmd /k "%PYTHON_EXE% rag_server.py"
+
+echo Waiting for RAG server to initialize...
+timeout /t 5 >nul
+
+start "RAG Ingestion Script" cmd /k "%PYTHON_EXE% rag_ingest.py"
+
+echo Waiting for RAG ingestion script to initialize...
+timeout /t 5 >nul
 
 start "Transcription Server" cmd /k "%PYTHON_EXE% server.py"
 

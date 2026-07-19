@@ -21,8 +21,11 @@ Respond ONLY with a JSON object:
       "type": "trauma | relationship | plot"
     }
   ],
-  "eventResolved": true/false,
-  "resolutionSummary": "If eventResolved is true, describe how the players resolved the current event (e.g., 'They smashed the door open'). Otherwise, leave empty."
+  "eventStatus": "stable | resolved | escalated | evolved",
+  "resolutionSummary": "If eventStatus is 'resolved', describe how the players solved the current event. Otherwise, leave empty.",
+  "updatedEventDescription": "If eventStatus is 'evolved', write the updated description of the situation. Otherwise, leave empty.",
+  "updatedComplication": "If eventStatus is 'escalated' or 'evolved', write the new immediate obstacle pushing back against them. Otherwise, leave empty.",
+  "updatedStakes": "If eventStatus is 'escalated' or 'evolved', write the new stakes (what happens if they fail). Otherwise, leave empty."
 }
 
 GUIDELINES:
@@ -40,7 +43,13 @@ GUIDELINES:
 5. In-Character Speech (spokenNarrative): If isImportant is true and you have guidance, a hint, or a skill check to request, you MUST include it in the "spokenNarrative" so the players hear it. For example, weave the hint into your description: "The dust on the tome seems undisturbed... perhaps an Investigation check would reveal more." This string will be converted to Text-to-Speech.
 6. Voice Profiles: If spokenNarrative is provided, specify the "voiceProfile" to match the speaker (e.g., "goblin" for a squeaky voice, "old_man" for a slow voice).
 7. Character Logs: If the transcript contains a major character development, traumatic experience, notable NPC interaction, or major plot event for a player character, log it in "characterLogs". Leave it as an empty array [] if nothing major happened. Use the Discord User to Character Map to understand who is acting.
-8. Current Event Tracking: Use the "Current Event" context to understand the immediate obstacle, puzzle, or scene the players are dealing with right now. If the transcript shows the players taking an action that resolves or clears the conditions of the Current Event, set "eventResolved" to true and provide a "resolutionSummary".
+8. Current Event Tracking: Use the "Current Event" context to understand the immediate obstacle, puzzle, or scene the players are dealing with right now. 
+   CRITICAL EVENT EVALUATION RULE: Do not look for a binary checklist resolution. Players are creative. Evaluate their recent dialogue and actions. Have they bypassed the threat, redirected it, mitigated the stakes, or introduced a clever exploitation of the environment/NPCs?
+   You must return an "eventStatus":
+   - "resolved" (The threat or problem is neutralized or fundamentally settled).
+   - "escalated" (The players ignored it, failed a major action, or made it worse—update the Complication!).
+   - "evolved" (The players altered the situation creatively; it's not solved, but the parameters changed).
+   - "stable" (The situation continues as-is).
 9. Enforcing Boundaries (The "No" Rule): You have absolute authority over the world's reality. If a player attempts an action that is physically impossible, severely breaks immersion, or wildly defies the rules of D&D, you MUST deny it. Explain the refusal clearly in your "spokenNarrative" using a firm description of why it fails, or use the "No, but..." philosophy to offer a realistic alternative.
 
 Current Event (The immediate obstacle or scene):
@@ -101,18 +110,18 @@ function callModel(prompt) {
 
     if (provider === 'gemini') {
         return callGemini(apiKey, prompt).then(text => {
-            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
         });
     }
 
     if (provider === 'anthropic') {
         return callAnthropic(apiKey, prompt).then(text => {
-            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
         });
     }
 
     return callOpenAI(apiKey, prompt).then(text => {
-        try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+        try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
     });
 }
 
@@ -127,7 +136,7 @@ function callOllama(prompt) {
     });
 
     return requestOllama(baseUrl, body).then(text => {
-        try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true }; }
+        try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
     });
 }
 
@@ -171,6 +180,7 @@ function callOpenAI(apiKey, prompt) {
         model: model,
         messages: [{ role: 'system', content: 'You are a helpful DM assistant.' }, { role: 'user', content: prompt }],
         temperature: 0.7,
+        response_format: { type: "json_object" }
     });
 
     return requestJson('https://api.openai.com/v1/chat/completions', {
@@ -192,7 +202,7 @@ function callAnthropic(apiKey, prompt) {
     const model = config.LLM || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
     const body = JSON.stringify({
         model: model,
-        max_tokens: 240,
+        max_tokens: 400,
         messages: [{ role: 'user', content: prompt }],
     });
 
@@ -294,7 +304,7 @@ function requestJson(url, headers, body) {
 function generateNextEvent(archivedEvents, rollingSummary, lastResolution) {
     const recentEvents = Array.isArray(archivedEvents) ? archivedEvents.slice(-5) : [];
 
-    const prompt = `You are an expert Dungeon Master. The players have just resolved the previous event, and you need to generate the NEXT immediate event, obstacle, puzzle, or scene they face. Be creative and think outside the box. Give hints on how to proceed occasionally.
+    const prompt = `You are an expert Dungeon Master. The players have just resolved the previous event, and you need to generate the NEXT immediate event, obstacle, puzzle, or scene they face. Be creative and think outside the box. 
 
 Rolling Summary of Session:
 ${rollingSummary || 'No major events recorded.'}
@@ -305,18 +315,14 @@ ${JSON.stringify(recentEvents, null, 2)}
 How they resolved the last event:
 ${lastResolution || 'N/A'}
 
-Based on their actions and the current narrative, generate the new Active Event.
+Based on their actions and the current narrative, generate the new Active Event. Ensure you focus on STAKES (what happens if they do nothing) and COMPLICATIONS (what pushes back against them).
 Respond ONLY with a JSON object in this exact format. Do not use markdown backticks:
 {
   "activeEvent": {
     "title": "Short title of the new scene/obstacle",
-    "description": "What do the players see, hear, or experience during the event?",
-    "conditionsToClear": [
-      "Condition 1 (e.g., 'Defeat the goblin ambush')",
-      "Condition 2 (e.g., 'Negotiate with the goblin leader')",
-      "Condition 3 (e.g., 'Be creative with your conditions!')"
-    ],
-    "potentialOutcomes": "What happens if they succeed or fail?"
+    "description": "What do the players see, hear, or experience right now?",
+    "stakes": "What happens if they do nothing or fail? (e.g., 'The town panics and prices quadruple')",
+    "complication": "What is the immediate obstacle or twist pushing back against them? (e.g., 'Guards suspect the players')"
   }
 }`;
 

@@ -96,68 +96,19 @@ function loadLocalSessionState() {
     }
 }
 
-function summarizeTranscript(transcript, knowledgeIndex) {
+// REMOVED knowledgeIndex argument — relies entirely on the RAG vector search now
+async function summarizeTranscript(transcript) {
     const normalizedTranscript = String(transcript || '').trim();
     if (!normalizedTranscript) {
         return { transcript, relevantRecords: [], advice: 'No transcript provided.' };
     }
 
-    const words = normalizedTranscript.toLowerCase()
-        .replace(/[^a-z0-9\s]+/g, ' ')
-        .split(/\s+/)
-        .filter(w => w.length > 4 && !STOP_WORDS.has(w));
-
-    const sessionState = loadLocalSessionState();
-    const activeNpcs = (sessionState.activeNpcs || []).map(npc => npc.toLowerCase());
-    const activeScene = (sessionState.activeScene || '').toLowerCase();
-
-    const scoredRecords = [];
-
-    (knowledgeIndex?.records || []).forEach((record) => {
-        let score = 0;
-        const nameLower = String(record.name || '').toLowerCase();
-        const descLower = String(record.description || '').toLowerCase();
-        const catLower = String(record.category || '').toLowerCase();
-
-        // 1. Direct match on record name
-        if (nameLower && nameLower.length > 3 && normalizedTranscript.toLowerCase().includes(nameLower)) {
-            score += 15;
-        }
-
-        // 2. Active tracking boost
-        if (activeScene && nameLower.includes(activeScene)) {
-            score += 10;
-        }
-        activeNpcs.forEach(npc => {
-            if (nameLower.includes(npc)) {
-                score += 10;
-            }
-        });
-
-        // 3. Token-based word matches
-        words.forEach(word => {
-            if (nameLower.includes(word)) {
-                score += 5;
-            } else if (descLower.includes(word)) {
-                score += 2;
-            } else if (catLower.includes(word)) {
-                score += 1;
-            }
-        });
-
-        if (score > 0) {
-            scoredRecords.push({ record, score });
-        }
-    });
-
-    const relevantRecords = scoredRecords
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5)
-        .map(entry => entry.record);
+    const { findRelevantRecords } = require('./context_manager');
+    const relevantRecords = await findRelevantRecords(normalizedTranscript);
 
     return {
         transcript: normalizedTranscript,
-        relevantRecords,
+        relevantRecords: relevantRecords.slice(0, 5),
         advice: buildAdvice(normalizedTranscript, relevantRecords),
     };
 }
@@ -174,8 +125,9 @@ function rememberAiInsight(aiResponse, transcriptChunk) {
     if (!aiResponse || aiResponse.isOOC || !aiResponse.isImportant) return null;
 
     const memory = loadMemory();
+    const timestamp = new Date().toISOString();
     memory.summaries.push({
-        timestamp: new Date().toISOString(),
+        timestamp,
         type: 'ai_insight',
         suggestion: aiResponse.suggestion,
         transcript: transcriptChunk,
@@ -183,6 +135,18 @@ function rememberAiInsight(aiResponse, transcriptChunk) {
     });
     memory.summaries = memory.summaries.slice(-30);
     saveMemory(memory);
+
+    // Save insight to RAG Database asynchronously
+    const { callRagServer } = require('./context_manager');
+    if (callRagServer) {
+        callRagServer('/add', {
+            collection: 'dnd_insights',
+            documents: [aiResponse.suggestion],
+            metadatas: [{ timestamp, transcript: transcriptChunk || '' }],
+            ids: [`insight_${Date.now()}_${Math.floor(Math.random() * 1000)}`]
+        }).catch(() => {});
+    }
+
     return memory;
 }
 
