@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { getAllWorldData } = require('../data/data_manager');
 const { 
-    callRagServer, // <-- ADDED: Needed for proxy and search
+    callRagServer,
     loadRelationships, 
     saveRelationships, 
     addRelationship, 
@@ -22,12 +22,10 @@ const UI_ROOT = path.join(__dirname, '..', '..', 'UI');
 const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
 const PORT = Number(process.env.DA_DAA_PORT || 8000);
 
-// CHANGED: Records search now queries ChromaDB directly instead of a memory array
+
 async function searchRecords(query = '', categoryFilter = null) {
     const normalized = String(query).trim().toLowerCase();
     
-    // If no query, we can't easily do a vector search for "everything". 
-    // Return empty or rely on a different UI mechanism.
     if (!normalized) {
         return [];
     }
@@ -124,8 +122,7 @@ function startWebEditor() {
     const server = http.createServer(async (req, res) => {
             const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
             const pathname = String(url.pathname || '').replace(/\/$/, '');
-            // small debug hook: uncomment to log incoming api paths
-            // console.log('-> web-editor request', pathname);
+            
 
         if (pathname === '/api/session_state') {
             if (req.method === 'GET') {
@@ -153,7 +150,7 @@ function startWebEditor() {
             }
         }
 
-        // NEW: The proxy endpoint so the dashboard can search the Vector DB directly
+
         if (pathname === '/api/rag_query') {
             if (req.method === 'POST') {
                 try {
@@ -203,7 +200,6 @@ function startWebEditor() {
                         }
                     });
 
-                    // Clear the RAG Transcript Collection
                     await callRagServer('/clear', { collection: 'dnd_transcripts' }).catch(() => {});
 
                     console.log('-> Local campaign session data has been purged successfully.');
@@ -215,7 +211,7 @@ function startWebEditor() {
             }
         }
 
-        // CHANGED: Uses RAG search now
+
         if (pathname === '/api/records') {
             try {
                 const query = url.searchParams.get('query') || '';
@@ -228,7 +224,7 @@ function startWebEditor() {
             return;
         }
 
-        // CHANGED: Categories are fetched from the JSON file dumped during init, not memory
+
         if (pathname === '/api/categories') {
             try {
                 const catsPath = path.join(TEMP_DATA_ROOT, 'categories.json');
@@ -243,7 +239,7 @@ function startWebEditor() {
             return;
         }
 
-        // CHANGED: Record fetching utilizes the fast ID lookup cache from context_manager.js if possible
+
         if (pathname === '/api/record') {
             try {
                 const id = url.searchParams.get('id');
@@ -252,7 +248,6 @@ function startWebEditor() {
                     return;
                 }
                 
-                // We rely on getAllWorldData because we need the raw object
                 const worldData = await getAllWorldData();
                 let foundRecord = null;
                 Object.values(worldData).forEach(categoryArray => {
@@ -360,13 +355,10 @@ function startWebEditor() {
                 if (pathname === '/api/transcript_log' || url.pathname === '/api/transcript_log' || pathname === '/api/transcript_log/') {
             if (req.method === 'GET') {
                 const transcriptPath = path.join(TEMP_DATA_ROOT, 'transcript_log.txt');
-                console.log(`-> Fetching transcript from: ${transcriptPath}`); // Debug log
-                if (fs.existsSync(transcriptPath)) {
+                                if (fs.existsSync(transcriptPath)) {
                     const content = fs.readFileSync(transcriptPath, 'utf8');
-                    console.log(`-> Transcript content length: ${content.length} characters`); // Debug log
                     sendText(res, 200, content);
                 } else {
-                    console.log('-> Transcript file not found'); // Debug log
                     sendText(res, 200, '');
                 }
                 return;
@@ -401,14 +393,11 @@ function startWebEditor() {
                 
                 const actors = worldData.actors || [];
                 
-                // Filter player characters
                 const characters = actors.filter(a => a.type === 'character' || a.type === 'Player').map(a => a.name).filter(Boolean);
                 const resultCharacters = characters.length > 0 ? characters : actors.map(a => a.name).filter(Boolean);
                 
-                // Filter scenes
                 const scenes = (worldData.scenes || []).map(s => s.name).filter(Boolean);
                 
-                // Filter NPCs
                 const npcs = actors.filter(a => a.type === 'npc' || a.type === 'NonPlayerCharacter').map(a => a.name).filter(Boolean);
                 const resultNpcs = npcs.length > 0 ? npcs : actors.map(a => a.name).filter(Boolean);
 

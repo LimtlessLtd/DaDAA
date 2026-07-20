@@ -9,12 +9,9 @@ const fs = require('fs');
 const socketsByUser = new Map();
 let transcriptHandler = null;
 
-// Track utterance start times per user to solve overlapping speech order issues
 const utteranceStartTimes = new Map();
-// Prevent memory leak / multiple subscriptions by keeping track of active streams per user
 const activeStreams = new Map();
 
-// Global audio player for the bot to speak
 const audioPlayer = createAudioPlayer();
 let currentVoiceConnection = null;
 let ttsQueue = [];
@@ -61,7 +58,6 @@ function ensureSocket(userId) {
         try {
             const payload = JSON.parse(message.toString());
             if (transcriptHandler && payload.text) {
-                // Get the start timestamp of this transcription from the queue
                 const userTimes = utteranceStartTimes.get(payload.userId || userId) || [];
                 const startTime = userTimes.shift() || Date.now();
                 transcriptHandler(payload.userId || userId, payload.text, startTime);
@@ -87,7 +83,6 @@ function joinAndListen(client, guildId, channelId, handler) {
     currentVoiceConnection = connection;
     connection.subscribe(audioPlayer);
 
-    // WORKAROUND: Play a tiny bit of silence so Discord starts sending us voice packets
     const { Readable } = require('stream');
     class Silence extends Readable {
         _read() {
@@ -98,19 +93,14 @@ function joinAndListen(client, guildId, channelId, handler) {
     audioPlayer.play(createAudioResource(new Silence(), { inputType: StreamType.Raw }));
 
     connection.receiver.speaking.on('start', (userId) => {
-        console.log(`[DEBUG] User ${userId} started speaking`);
-        // Prevent registering duplicate streams/subscriptions for the same user if they are already speaking
         if (activeStreams.has(userId)) {
-            console.log(`[DEBUG] Stream already active for ${userId}`);
             return;
         }
 
         const socket = ensureSocket(userId);
         
-        // Let the rest of the bot know someone is talking
         client.emit('dndSpeechStart', userId);
         
-        // Record the start timestamp of this specific speech segment
         if (!utteranceStartTimes.has(userId)) {
             utteranceStartTimes.set(userId, []);
         }
@@ -123,25 +113,18 @@ function joinAndListen(client, guildId, channelId, handler) {
 
         const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 1, frameSize: 960 });
 
-        // Safely catch subscription errors to prevent crashes on network drops
 audioStream.on('error', (err) => {
             console.warn(`-> Audio stream error for user ${userId}:`, err.message);
-            // If encryption fails, destroy the stream immediately so we don't spam errors
             activeStreams.delete(userId);
             audioStream.destroy();
-            // Emit end so the silence timer can restart
             client.emit('dndSpeechEnd', userId); 
         });
 
-        // Safely catch decoder errors to prevent crashes on corrupted/malformed voice packets
         opusDecoder.on('error', (err) => {
             console.warn(`-> Opus decoder error for user ${userId} (corrupted packet discarded):`, err.message);
         });
 
-        let packetCount = 0;
-        audioStream.pipe(opusDecoder).on('data', (chunk) => {
-            packetCount++;
-            if (packetCount % 50 === 0) console.log(`[DEBUG] Sent ${packetCount} chunks to server for ${userId}`);
+                audioStream.pipe(opusDecoder).on('data', (chunk) => {
             if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(chunk);
             }
@@ -184,13 +167,11 @@ function processTtsQueue() {
     const tempAudioPath = path.join(__dirname, '..', '..', 'temp_data', 'tts_output.wav');
     const pythonScript = path.join(__dirname, 'local_tts.py');
 
-    // Make sure the temp directory exists
     const dataDir = path.dirname(tempAudioPath);
     if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
     }
 
-    // Spawn python script to generate audio
     execFile('python', [pythonScript, text, tempAudioPath, profile], (error) => {
         if (error) {
             console.error('-> TTS Generation Error:', error.message);
@@ -200,7 +181,6 @@ function processTtsQueue() {
         }
 
         try {
-            // gTTS produces mp3 files under the hood even if named .wav, but discordjs/voice + ffmpeg can handle it natively.
             const resource = createAudioResource(tempAudioPath);
             audioPlayer.play(resource);
         } catch (e) {

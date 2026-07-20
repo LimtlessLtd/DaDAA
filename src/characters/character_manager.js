@@ -89,7 +89,6 @@ function getCharacterMapString() {
     return entries.map(([user, chars]) => `${user} -> ${chars.join(', ')}`).join('\n');
 }
 
-// NEW FUNCTION: Retrieves the bound character name for a Discord user
 function getBoundCharacterName(discordUser) {
     const map = loadCharacterMap();
     if (map[discordUser] && map[discordUser].length > 0) {
@@ -172,7 +171,7 @@ module.exports = {
     bindCharacter,
     unbindCharacter,
     getCharacterMapString,
-    getBoundCharacterName, // NEW EXPORT
+    getBoundCharacterName,
     loadCharacterLogs,
     addCharacterLogs,
     loadSeenDiscordUsers,

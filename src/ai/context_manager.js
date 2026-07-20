@@ -8,7 +8,6 @@ const relationshipsPath = path.join(dataDir, 'relationships.json');
 const transcriptLogPath = path.join(dataDir, 'transcript_log.txt');
 const sessionStatePath = path.join(dataDir, 'session_state.json');
 
-// Lightweight in-memory caches for O(1) exact lookups
 const worldDbCache = new Map();
 const exactNameCache = new Map();
 
@@ -32,13 +31,12 @@ function saveSessionState(state) {
     ensureDataDirectories();
     fs.writeFileSync(sessionStatePath, JSON.stringify(state, null, 2));
     
-    // Immediately push new state to RAG so the AI DM knows the current scene
     const activeText = `Active Scene: ${state.activeScene || 'None'}\nActive NPCs: ${state.activeNpcs?.join(', ') || 'None'}`;
     callRagServer('/add', {
         collection: 'dnd_knowledge',
         documents: [activeText],
         metadatas: [{ source: 'session_state', category: 'Live State' }],
-        ids: ['current_session_state'] // Static ID means it gracefully overwrites old state
+        ids: ['current_session_state']
     }).catch(() => {});
 }
 
@@ -87,7 +85,6 @@ function callRagServer(apiPath, data) {
             res.on('end', () => resolve(JSON.parse(responseData || '{}')));
         });
 
-        // Increase timeout to 60 seconds to allow for large Foundry data syncing
         req.setTimeout(60000, () => {
             req.destroy();
             reject(new Error("RAG Server timeout"));
@@ -95,7 +92,6 @@ function callRagServer(apiPath, data) {
 
         req.on('error', (e) => {
             console.warn(`-> RAG Server unreachable at ${apiPath}.`);
-            // Do NOT retry here. Let the bot continue; it will try again next cycle.
             resolve(null); 
         });
         
@@ -244,7 +240,6 @@ function migrateRelationships() {
     // Use our exactNameCache to find IDs based on labels
     for (const entry of relationships) {
         if ((!entry.sourceId || !entry.targetId) && entry.source && entry.target) {
-            // Your old code relied on category:name, we normalize just to be safe
             const sNameMatch = entry.source.split(':').pop();
             const tNameMatch = entry.target.split(':').pop();
             
@@ -267,8 +262,7 @@ function migrateRelationships() {
 }
 
 function appendTranscript(text, source = 'discord', customTimestamp = null) {
-    console.log(`-> Appending transcript: "${text}" from ${source}`); // Debug log
-    console.log(`-> Transcript file path: ${transcriptLogPath}`); // Debug log
+    
     ensureDataDirectories();
     const now = customTimestamp ? new Date(customTimestamp) : new Date();
     const timestamp = now.toISOString();
@@ -303,8 +297,7 @@ function appendTranscript(text, source = 'discord', customTimestamp = null) {
     } catch (err) {}
 
         const line = `[${timestamp}] [${source}] ${text}`;
-    fs.appendFileSync(transcriptLogPath, `${line}\n`, 'utf8');
-    console.log(`-> Transcript written to file: ${line}`); // Debug log
+        fs.appendFileSync(transcriptLogPath, `${line}\n`, 'utf8');
     
     // Ensure file doesn't grow beyond 1000 lines
     try {

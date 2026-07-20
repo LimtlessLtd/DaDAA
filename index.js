@@ -1,5 +1,5 @@
 // index.js
-// Implement as few discord commands as possible, it should mostly be driven by dashboard UI buttons and widgets.
+
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -129,9 +129,7 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                 console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                 speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
                 
-                console.log(`-> Writing DM transcript (silence driver): "${aiReply.spokenNarrative}"`); 
-                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
-                console.log(`-> DM transcript written to file (silence driver)`); 
+                                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now()); 
             }
 
             const isImportantInsight = aiReply.suggestion && !aiReply.isOOC;
@@ -263,7 +261,7 @@ client.on('messageCreate', async (message) => {
                 console.log(`\n[Audio Transcribed] ${sourceLabel} (${discordName}): "${transcript}"`);
 
                 recordDiscordUser(discordName);
-                appendTranscript(transcript, sourceLabel, Date.now()); // Uses explicit timestamp
+                appendTranscript(transcript, sourceLabel, Date.now());
                 
                 stats.totalUtterances++;
                 
@@ -351,9 +349,7 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                                     console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                                     speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
                                     
-                                    console.log(`-> Writing DM transcript: "${aiReply.spokenNarrative}"`); 
-                                    appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
-                                    console.log(`-> DM transcript written to file`); 
+                                    appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now()); 
                                 } else {
                                     console.log(`-> WARNING: AI generated response but no spokenNarrative`); 
                                 }
