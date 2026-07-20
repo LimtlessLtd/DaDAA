@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const dataDir = path.join(__dirname, '..', 'temp_data');
+const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const notesPath = path.join(dataDir, 'session_notes.json');
 
 function ensureDataDirectories() {

@@ -1,9 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { getAllWorldData } = require('./data_manager');
+const { getAllWorldData } = require('../data/data_manager');
 
-const dataDir = path.join(__dirname, '..', 'temp_data');
+const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const relationshipsPath = path.join(dataDir, 'relationships.json');
 const transcriptLogPath = path.join(dataDir, 'transcript_log.txt');
 const sessionStatePath = path.join(dataDir, 'session_state.json');
@@ -267,6 +267,8 @@ function migrateRelationships() {
 }
 
 function appendTranscript(text, source = 'discord', customTimestamp = null) {
+    console.log(`-> Appending transcript: "${text}" from ${source}`); // Debug log
+    console.log(`-> Transcript file path: ${transcriptLogPath}`); // Debug log
     ensureDataDirectories();
     const now = customTimestamp ? new Date(customTimestamp) : new Date();
     const timestamp = now.toISOString();
@@ -288,6 +290,10 @@ function appendTranscript(text, source = 'discord', customTimestamp = null) {
                         const sep = lastText.match(/[.!?]$/) ? ' ' : ' ';
                         const newText = `${lastText}${sep}${text}`.replace(/\s+/g, ' ').trim();
                         lines[lines.length - 1] = `[${m[1]}] [${source}] ${newText}`;
+                        // Limit to last 1000 lines
+                        if (lines.length > 1000) {
+                            lines.splice(0, lines.length - 1000);
+                        }
                         fs.writeFileSync(transcriptLogPath, lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
                         return `[${m[1]}] [${source}] ${newText}`;
                     }
@@ -296,9 +302,23 @@ function appendTranscript(text, source = 'discord', customTimestamp = null) {
         }
     } catch (err) {}
 
-    const line = `[${timestamp}] [${source}] ${text}`;
+        const line = `[${timestamp}] [${source}] ${text}`;
     fs.appendFileSync(transcriptLogPath, `${line}\n`, 'utf8');
+    console.log(`-> Transcript written to file: ${line}`); // Debug log
     
+    // Ensure file doesn't grow beyond 1000 lines
+    try {
+        const contents = fs.readFileSync(transcriptLogPath, 'utf8');
+        const lines = contents.split('\n').filter(Boolean);
+        if (lines.length > 1000) {
+            const limitedLines = lines.slice(-1000);
+            fs.writeFileSync(transcriptLogPath, limitedLines.join('\n') + '\n', 'utf8');
+        }
+    } catch (e) {
+        console.warn('-> Failed to limit transcript file size:', e.message);
+    }
+    
+    // Store in RAG database for semantic search
     callRagServer('/add', {
         collection: 'dnd_transcripts',
         documents: [text],
@@ -313,7 +333,12 @@ function readTranscriptLog() {
     if (!fs.existsSync(transcriptLogPath)) return '';
     try {
         const content = fs.readFileSync(transcriptLogPath, 'utf8');
-        const lines = content.split('\n').filter(Boolean);
+        let lines = content.split('\n').filter(Boolean);
+        
+        // Limit to most recent 1000 lines for performance
+        if (lines.length > 1000) {
+            lines = lines.slice(-1000);
+        }
         
         // Strictly sort lines by the ISO timestamp inside the first brackets
         lines.sort((a, b) => {

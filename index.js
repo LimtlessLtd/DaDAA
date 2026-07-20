@@ -4,7 +4,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
-const { joinAndListen, speakText } = require('./src/voice_manager');
+const { joinAndListen, speakText } = require('./src/voice/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
 const { 
     initializeWorldContext, 
@@ -14,12 +14,12 @@ const {
     loadSessionState, 
     saveSessionState,
     findRelevantRecords
-} = require('./src/context_manager');
-const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai_helper');
-const { buildPrompt, callModel, generateNextEvent } = require('./src/ai_provider');
-const { startWebEditor } = require('./src/web_editor');
-const { loadSessionNotes, findTriggeredNotes } = require('./src/session_manager');
-const { bindCharacter, unbindCharacter, getCharacterMapString, addCharacterLogs, loadCharacterLogs, recordDiscordUser, getPlayerLogsString } = require('./src/character_manager');
+} = require('./src/ai/context_manager');
+const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai/ai_helper');
+const { buildPrompt, callModel, generateNextEvent } = require('./src/ai/ai_provider');
+const { startWebEditor } = require('./src/web/web_editor');
+const { loadSessionNotes, findTriggeredNotes } = require('./src/sessions/session_manager');
+const { bindCharacter, unbindCharacter, getCharacterMapString, addCharacterLogs, loadCharacterLogs, recordDiscordUser, getPlayerLogsString } = require('./src/characters/character_manager');
 const config = require('./config.json');
 
 console.log('-> Starting DaDAA...');
@@ -130,7 +130,9 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                 console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                 speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
                 
+                console.log(`-> Writing DM transcript (silence driver): "${aiReply.spokenNarrative}"`); // DEBUG: DM transcript
                 appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
+                console.log(`-> DM transcript written to file (silence driver)`); // DEBUG: Confirmation
             }
 
             const isImportantInsight = aiReply.suggestion && !aiReply.isOOC;
@@ -206,7 +208,7 @@ async function sendDmToOwner(content) {
     return;
 }
 
-client.once('clientReady', () => {
+client.once('ready', () => {
     console.log(`-> DaDAA is ready and logged in as ${client.user.tag}`);
     startWebEditor();
     
@@ -257,7 +259,7 @@ client.on('messageCreate', async (message) => {
                 console.log(`\n[Audio Transcribed] ${sourceLabel}: "${transcript}"`);
 
                 recordDiscordUser(sourceLabel);
-                appendTranscript(transcript, sourceLabel, startTime);
+                appendTranscript(transcript, sourceLabel, Date.now());
                 
                 stats.totalUtterances++;
                 
@@ -346,7 +348,11 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                                     console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                                     speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
                                     
+                                    console.log(`-> Writing DM transcript: "${aiReply.spokenNarrative}"`); // DEBUG: DM transcript
                                     appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
+                                    console.log(`-> DM transcript written to file`); // DEBUG: Confirmation
+                                } else {
+                                    console.log(`-> WARNING: AI generated response but no spokenNarrative`); // DEBUG: Missing narration
                                 }
 
                                 const isImportantInsight = aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant;

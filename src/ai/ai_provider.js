@@ -1,6 +1,6 @@
 const https = require('https');
 const http = require('http');
-const config = require('../config.json');
+const config = require('../../config.json');
 
 function buildPrompt(transcript, context, rollingSummary = '', characterMapString = '', currentEventString = '', playerLogsString = '') {
     return `You are the sole Dungeon Master. You are a creative, narrative-focused Dungeon Master with absolute authority over the world, its rules, and its lore. You are not assisting a human DM; you ARE the DM. Your goal is to keep players immersed, enforce the rules, and run a consistent Dungeons and Dragons world. You decide what NPCs do, the outcomes of player actions, and world events.

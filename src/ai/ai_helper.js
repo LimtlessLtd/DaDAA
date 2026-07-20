@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const memoryPath = path.join(__dirname, '..', 'temp_data', 'ai_memory.json');
-const sessionStatePath = path.join(__dirname, '..', 'temp_data', 'session_state.json');
+const memoryPath = path.join(__dirname, '..', '..', 'temp_data', 'ai_memory.json');
+const sessionStatePath = path.join(__dirname, '..', '..', 'temp_data', 'session_state.json');
 
 const STOP_WORDS = new Set([
     'this', 'that', 'with', 'from', 'have', 'your', 'will', 'they', 'them', 'then', 

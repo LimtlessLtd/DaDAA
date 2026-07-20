@@ -1,7 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { getAllWorldData } = require('./data_manager');
+const { getAllWorldData } = require('../data/data_manager');
 const { 
     callRagServer, // <-- ADDED: Needed for proxy and search
     loadRelationships, 
@@ -12,14 +12,14 @@ const {
     loadSessionState, 
     saveSessionState, 
     readTranscriptLog 
-} = require('./context_manager');
-const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote } = require('./session_manager');
-const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('./character_manager');
-const { getRollingSummary } = require('./ai_helper');
-const { generateNextEvent } = require('./ai_provider');
+} = require('../ai/context_manager');
+const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote } = require('../sessions/session_manager');
+const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('../characters/character_manager');
+const { getRollingSummary } = require('../ai/ai_helper');
+const { generateNextEvent } = require('../ai/ai_provider');
 
-const UI_ROOT = path.join(__dirname, '..', 'UI');
-const TEMP_DATA_ROOT = path.join(__dirname, '..', 'temp_data');
+const UI_ROOT = path.join(__dirname, '..', '..', 'UI');
+const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
 const PORT = Number(process.env.DA_DAA_PORT || 8000);
 
 // CHANGED: Records search now queries ChromaDB directly instead of a memory array
@@ -357,12 +357,16 @@ function startWebEditor() {
             }
         }
 
-        if (pathname === '/api/transcript_log' || url.pathname === '/api/transcript_log' || pathname === '/api/transcript_log/') {
+                if (pathname === '/api/transcript_log' || url.pathname === '/api/transcript_log' || pathname === '/api/transcript_log/') {
             if (req.method === 'GET') {
                 const transcriptPath = path.join(TEMP_DATA_ROOT, 'transcript_log.txt');
+                console.log(`-> Fetching transcript from: ${transcriptPath}`); // Debug log
                 if (fs.existsSync(transcriptPath)) {
-                    sendText(res, 200, fs.readFileSync(transcriptPath, 'utf8'));
+                    const content = fs.readFileSync(transcriptPath, 'utf8');
+                    console.log(`-> Transcript content length: ${content.length} characters`); // Debug log
+                    sendText(res, 200, content);
                 } else {
+                    console.log('-> Transcript file not found'); // Debug log
                     sendText(res, 200, '');
                 }
                 return;

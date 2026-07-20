@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const dataDir = path.join(__dirname, '..', 'temp_data');
+const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const charMapPath = path.join(dataDir, 'character_map.json');
 const charLogsPath = path.join(dataDir, 'character_logs.json');
 const playerLogsPath = path.join(dataDir, 'player_logs.json');

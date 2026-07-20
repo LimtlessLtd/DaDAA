@@ -181,7 +181,7 @@ function processTtsQueue() {
     const text = item.text;
     const profile = item.profile || 'narrator';
     
-    const tempAudioPath = path.join(__dirname, '..', 'temp_data', 'tts_output.wav');
+    const tempAudioPath = path.join(__dirname, '..', '..', 'temp_data', 'tts_output.wav');
     const pythonScript = path.join(__dirname, 'local_tts.py');
 
     // Make sure the temp directory exists

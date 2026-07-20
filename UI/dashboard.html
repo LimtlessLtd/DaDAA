@@ -293,7 +293,7 @@
     const speakerColorMap = {};
     let transcriptFullView = false;
     const transcriptPreviewLines = 5;
-    let insightsFilterActive = false;
+    let insightsFilterActive = true;
     const insightsPreviewCount = 3;
 
     function getSpeakerColor(source) {
@@ -561,10 +561,13 @@
         document.getElementById('memory').innerHTML = '<div class="item">No insights recorded.</div>';
       }
 
-      try {
+            try {
+        console.log('-> Fetching transcript updates...'); // Debug log
         const transcriptText = await fetch('/api/transcript_log').then((r) => r.text());
+        console.log(`-> Received transcript: ${transcriptText.length} characters`); // Debug log
         renderTranscriptLog(transcriptText || '');
       } catch (e) {
+        console.error('-> Failed to fetch transcript:', e); // Debug log
         document.getElementById('transcriptLog').innerHTML = '<div class="item">No live transcript stream found.</div>';
       }
 
@@ -573,7 +576,7 @@
       loadCharacterMap();
     }
 
-    function renderTranscriptLog(text) {
+        function renderTranscriptLog(text) {
       let lines = String(text).split('\n').filter(Boolean);
       const container = document.getElementById('transcriptLog');
 
@@ -583,7 +586,15 @@
         return;
       }
 
-      lines.sort((a, b) => a.localeCompare(b));
+      // Sort by timestamp (extract timestamp from brackets and compare as dates)
+      lines.sort((a, b) => {
+        const matchA = a.match(/^\[(.+?)\]/);
+        const matchB = b.match(/^\[(.+?)\]/);
+        if (matchA && matchB) {
+          return new Date(matchA[1]) - new Date(matchB[1]);
+        }
+        return 0;
+      });
       lines = lines.reverse();
       if (!transcriptFullView) {
         lines = lines.slice(0, transcriptPreviewLines);
@@ -777,7 +788,8 @@
 
     document.getElementById('debugToggleBtn').addEventListener('click', toggleDebugMode);
 
-    setInterval(() => {
+        setInterval(() => {
+      console.log(`-> Auto-refreshing dashboard at ${new Date().toLocaleTimeString()}`); // Debug log
       loadData();
       if (debugModeActive) loadDebugData();
     }, 3000);

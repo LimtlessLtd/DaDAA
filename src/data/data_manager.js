@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { ClassicLevel } = require('classic-level');
-const config = require('../config.json');
+const config = require('../../config.json');
 
 async function getAllWorldData() {
     console.log("--- DaDAA: Starting Data Extraction ---");
@@ -44,7 +44,7 @@ async function getAllWorldData() {
 
     if (!loadedFromDb) {
         console.log("-> Foundry LevelDB path not loaded. Falling back to reading JSON world data files from temp_data...");
-        const tempDataPath = path.join(__dirname, '..', 'temp_data');
+        const tempDataPath = path.join(__dirname, '..', '..', 'temp_data');
         if (fs.existsSync(tempDataPath)) {
             const tempFolders = ['actors', 'items', 'journal', 'tables', 'scenes', 'combats'];
             for (const folder of tempFolders) {

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # run_bot.sh - Linux/Unix equivalent to run_bot.bat
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # Helper: find and kill processes listening on a given port whose command line contains a match string
 cleanup_port() {
@@ -54,10 +54,10 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 echo "Checking for stale RAG server on port 8766..."
-cleanup_port 8766 rag_server.py
+cleanup_port 8766 server/rag_server.py
 
 echo "Checking for stale transcription server on port 8765..."
-cleanup_port 8765 server.py
+cleanup_port 8765 server/server.py
 
 echo "Checking for stale bot server on port 8000..."
 cleanup_port 8000 index.js
@@ -66,7 +66,7 @@ cleanup_port 8000 index.js
 mkdir -p logs
 
 echo "Starting RAG Server..."
-"${PYTHON_EXE}" rag_server.py > logs/rag_server.log 2>&1 &
+"${PYTHON_EXE}" server/rag_server.py > logs/rag_server.log 2>&1 &
 RAG_PID=$!
 if command -v disown >/dev/null 2>&1; then disown ${RAG_PID} 2>/dev/null || true; fi
 
@@ -74,7 +74,7 @@ echo "Waiting for RAG server to initialize..."
 sleep 5
 
 echo "Starting RAG Ingestion Script..."
-"${PYTHON_EXE}" rag_ingest.py > logs/rag_ingest.log 2>&1 &
+"${PYTHON_EXE}" server/rag_ingest.py > logs/rag_ingest.log 2>&1 &
 INGEST_PID=$!
 if command -v disown >/dev/null 2>&1; then disown ${INGEST_PID} 2>/dev/null || true; fi
 
@@ -82,7 +82,7 @@ echo "Waiting for RAG ingestion script to initialize..."
 sleep 5
 
 echo "Starting Transcription Server..."
-"${PYTHON_EXE}" server.py > logs/transcription.log 2>&1 &
+"${PYTHON_EXE}" server/server.py > logs/transcription.log 2>&1 &
 TRANS_PID=$!
 if command -v disown >/dev/null 2>&1; then disown ${TRANS_PID} 2>/dev/null || true; fi
 
