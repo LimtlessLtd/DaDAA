@@ -19,7 +19,7 @@ const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSumma
 const { buildPrompt, callModel, generateNextEvent } = require('./src/ai/ai_provider');
 const { startWebEditor } = require('./src/web/web_editor');
 const { loadSessionNotes, findTriggeredNotes } = require('./src/sessions/session_manager');
-const { bindCharacter, unbindCharacter, getCharacterMapString, addCharacterLogs, loadCharacterLogs, recordDiscordUser, getPlayerLogsString } = require('./src/characters/character_manager');
+const { bindCharacter, unbindCharacter, getCharacterMapString, addCharacterLogs, loadCharacterLogs, recordDiscordUser, getPlayerLogsString, getBoundCharacterName } = require('./src/characters/character_manager');
 const config = require('./config.json');
 
 console.log('-> Starting DaDAA...');
@@ -84,7 +84,6 @@ async function handleSilenceDriver() {
         try {
             currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
             if (currentEventData.activeEvent) {
-                // FIXED: Now properly passes Stakes and Complications to the LLM
                 currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}`;
             }
         } catch(e) {}
@@ -130,9 +129,9 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                 console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                 speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
                 
-                console.log(`-> Writing DM transcript (silence driver): "${aiReply.spokenNarrative}"`); // DEBUG: DM transcript
+                console.log(`-> Writing DM transcript (silence driver): "${aiReply.spokenNarrative}"`); 
                 appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
-                console.log(`-> DM transcript written to file (silence driver)`); // DEBUG: Confirmation
+                console.log(`-> DM transcript written to file (silence driver)`); 
             }
 
             const isImportantInsight = aiReply.suggestion && !aiReply.isOOC;
@@ -249,17 +248,22 @@ client.on('messageCreate', async (message) => {
         if (voiceChannel) {
             joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript, startTime) => {
                 let sourceLabel = userId;
+                let discordName = userId;
+                
                 try {
                     const userObj = await client.users.fetch(userId);
                     if (userObj && (userObj.username || userObj.tag)) {
-                        sourceLabel = userObj.username || userObj.tag;
+                        discordName = userObj.username || userObj.tag;
+                        
+                        const charName = getBoundCharacterName(discordName); // Checks mapping for bound character
+                        sourceLabel = charName ? charName : discordName;
                     }
                 } catch (e) { /* fallback to id */ }
                 
-                console.log(`\n[Audio Transcribed] ${sourceLabel}: "${transcript}"`);
+                console.log(`\n[Audio Transcribed] ${sourceLabel} (${discordName}): "${transcript}"`);
 
-                recordDiscordUser(sourceLabel);
-                appendTranscript(transcript, sourceLabel, Date.now());
+                recordDiscordUser(discordName);
+                appendTranscript(transcript, sourceLabel, Date.now()); // Uses explicit timestamp
                 
                 stats.totalUtterances++;
                 
@@ -302,7 +306,6 @@ client.on('messageCreate', async (message) => {
                         try {
                             currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
                             if (currentEventData.activeEvent) {
-                                // FIXED: Matches the new Stakes/Complication format
                                 currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}`;
                             }
                         } catch(e) {}
@@ -348,11 +351,11 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                                     console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                                     speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
                                     
-                                    console.log(`-> Writing DM transcript: "${aiReply.spokenNarrative}"`); // DEBUG: DM transcript
+                                    console.log(`-> Writing DM transcript: "${aiReply.spokenNarrative}"`); 
                                     appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
-                                    console.log(`-> DM transcript written to file`); // DEBUG: Confirmation
+                                    console.log(`-> DM transcript written to file`); 
                                 } else {
-                                    console.log(`-> WARNING: AI generated response but no spokenNarrative`); // DEBUG: Missing narration
+                                    console.log(`-> WARNING: AI generated response but no spokenNarrative`); 
                                 }
 
                                 const isImportantInsight = aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant;
@@ -366,7 +369,6 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                                     addCharacterLogs(aiReply.characterLogs);
                                 }
 
-                                // FIXED: Replaced the old eventResolved logic with the new eventStatus logic
                                 if (currentEventData.activeEvent && aiReply.eventStatus) {
                                     const status = aiReply.eventStatus.toLowerCase();
                                     console.log(`-> Event Evaluation [${currentEventData.activeEvent.title}]: ${status.toUpperCase()}`);
