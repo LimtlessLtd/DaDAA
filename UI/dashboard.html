@@ -138,13 +138,14 @@
       <h1>DaDAA Dashboard</h1>
       <div style="display: flex; align-items: center; gap: 8px;">
         <button id="debugToggleBtn" style="background: #475569; font-size: 0.75rem; padding: 4px 8px;">Show Debug Mode</button>
+        <button onclick="fetch('/api/shutdown', {method: 'POST'})" style="background: #b91c1c; padding: 4px 8px; font-size: 0.75rem;">Kill servers & services</button>
         <div id="status" class="status-badge">Status: Ready</div>
       </div>
     </header>
 
     <div class="grid">
       <!-- Left Column: Insights / Memory -->
-      <div class="panel">
+      <div class="panel" style="width: 550px; overflow-wrap: anywhere;">
         <div class="panel-title">
           Recent AI Insights
           <button id="insightsFilterBtn" style="padding: 4px 8px; font-size: 0.75rem;">Show 5 Recent</button>
@@ -169,7 +170,10 @@
       <div class="panel">
         <div class="panel-title">Current Event</div>
         <div class="input-group">
-          <button id="generateEventBtn">Generate new event</button>
+          <div style="display: flex; gap: 8px;">
+            <button id="startCampaignBtn" style="background: #10b981; flex: 1;">Start New Campaign</button>
+            <button id="generateEventBtn" style="flex: 1;">Generate new event</button>
+          </div>
           <div id="currentEventDisplay" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
              <!-- Event injected here -->
              No active event.
@@ -219,10 +223,16 @@
       </div>
       <div class="input-group" style="flex-direction: row; align-items: center;">
         <input type="text" id="ragSearchInput" placeholder="Search the AI DM's brain..." style="flex: 1;" />
-        <select id="ragCollectionSelect" style="width: 200px;">
-          <option value="dnd_knowledge">Foundry Lore & State</option>
-          <option value="dnd_transcripts">Live Transcripts</option>
-        </select>
+                <select id="ragCollectionSelect" style="width: 200px;">
+                  <option value="dnd_characters">Characters</option>
+                  <option value="dnd_locations">Locations</option>
+                  <option value="dnd_items">Items</option>
+                  <option value="dnd_quests">Quests</option>
+                  <option value="dnd_lore">Lore</option>
+                  <option value="dnd_encounters">Encounters</option>
+                  <option value="dnd_sessions">Sessions</option>
+                  <option value="dnd_transcripts">Transcripts</option>
+                </select>
         <button id="ragSearchBtn" style="white-space: nowrap;">Query Vectors</button>
       </div>
       <div id="ragSearchResults" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
@@ -237,8 +247,12 @@
         <span style="font-size: 0.75rem; text-transform: none; color: #64748b;" id="debugLastUpdated">Never updated</span>
       </div>
       
-      <!-- Telemetry Cards -->
+            <!-- Telemetry Cards -->
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px;">
+        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">LLM Provider Status</div>
+          <div style="font-size: 0.95rem; font-weight: 700; color: #10b981; margin-top: 4px;" id="telemetryProviderStatus">-</div>
+        </div>
         <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
           <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Active Model</div>
           <div style="font-size: 0.95rem; font-weight: 700; color: #3b82f6; margin-top: 4px;" id="telemetryModel">-</div>
@@ -393,9 +407,12 @@
               <div style="margin-top: 4px; padding-left: 8px;">`;
             
             for (const char of chars) {
+                const jsUser = user.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                const jsChar = char.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                
                 html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
                     <span style="color: #cbd5e1;">${escapeHtml(char)}</span>
-                    <button style="background: #ef4444; padding: 2px 6px; font-size: 0.7rem;" onclick="unbindCharacter('${escapeHtml(user)}', '${escapeHtml(char)}')">Unbind</button>
+                    <button style="background: #ef4444; padding: 2px 6px; font-size: 0.7rem;" onclick="unbindCharacter('${jsUser}', '${jsChar}')">Unbind</button>
                 </div>`;
             }
             html += `</div></div>`;
@@ -472,11 +489,11 @@
       }
     }
 
-    async function populateDropdowns() {
+        async function populateDropdowns() {
       try {
         const [discordRes, entitiesRes] = await Promise.all([
           fetch('/api/discord_users'),
-          fetch('/api/foundry_entities')
+          fetch('/api/entities')
         ]);
         
         if (discordRes.ok) {
@@ -488,7 +505,7 @@
           if (currentVal) userSelect.value = currentVal;
         }
         
-        if (entitiesRes.ok) {
+                if (entitiesRes.ok) {
           const entities = await entitiesRes.json();
           let actorElem = document.getElementById('characterNameInput');
           const chars = (entities.characters || []);
@@ -499,7 +516,7 @@
               const input = document.createElement('input');
               input.type = 'text';
               input.id = 'characterNameInput';
-              input.placeholder = 'Enter Foundry Actor name';
+              input.placeholder = 'Enter Actor name';
               input.style.background = '#0f172a';
               input.style.border = '1px solid #334155';
               input.style.color = 'white';
@@ -518,7 +535,7 @@
               actorElem = select;
             }
 
-            actorElem.innerHTML = '<option value="">Select Foundry Actor</option>' + 
+            actorElem.innerHTML = '<option value="">Select Actor</option>' +
               chars.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
             if (currentActor) actorElem.value = currentActor;
           }
@@ -727,16 +744,52 @@
     document.getElementById('bindCharacterBtn').addEventListener('click', bindCharacter);
     document.getElementById('transcriptToggleBtn').addEventListener('click', toggleTranscriptView);
     document.getElementById('insightsFilterBtn').addEventListener('click', toggleInsightsFilter);
+    
+    document.getElementById('startCampaignBtn').addEventListener('click', async () => {
+      if (!confirm("WARNING: This will permanently wipe all current campaign data, including transcript history, AI memory, and session state. Do you want to proceed and start a new campaign?")) {
+        return;
+      }
+
+      const btn = document.getElementById('startCampaignBtn');
+      btn.disabled = true;
+      btn.textContent = 'Starting Session Zero...';
+      try {
+        const res = await fetch('/api/start_campaign', { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to initialize new campaign');
+        alert("Campaign initialized successfully.");
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.textContent = 'Start New Campaign';
+        btn.disabled = false;
+      }
+    });
 
     // --- LLM Telemetry & Debug Mode ---
     let debugModeActive = false;
 
-    async function loadDebugData() {
+        async function loadDebugData() {
       if (!debugModeActive) return;
       try {
         const debug = await fetch('/temp_data/llm_debug.json').then((r) => r.json());
         if (debug) {
           document.getElementById('debugLastUpdated').innerText = 'Last updated: ' + new Date(debug.timestamp).toLocaleTimeString();
+          
+          // Set provider status
+          const providerStatus = document.getElementById('telemetryProviderStatus');
+          if (debug.providerAvailable !== undefined) {
+            if (debug.providerAvailable) {
+              providerStatus.innerText = '✅ Available';
+              providerStatus.style.color = '#10b981';
+            } else {
+              providerStatus.innerText = '❌ Not Configured';
+              providerStatus.style.color = '#ef4444';
+            }
+          } else {
+            providerStatus.innerText = 'Unknown';
+            providerStatus.style.color = '#f59e0b';
+          }
+          
           document.getElementById('telemetryModel').innerText = String(debug.model || 'Unknown');
           document.getElementById('telemetryLatency').innerText = String(debug.latencyMs || 0) + ' ms';
           

@@ -1,6 +1,9 @@
+// web/web_editor.js
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { exec } = require('child_process');
 const { getAllWorldData } = require('../data/data_manager');
 const { 
     callRagServer,
@@ -13,7 +16,7 @@ const {
     saveSessionState, 
     readTranscriptLog 
 } = require('../ai/context_manager');
-const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote } = require('../sessions/session_manager');
+const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote, startSessionZero } = require('../sessions/session_manager');
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('../characters/character_manager');
 const { getRollingSummary } = require('../ai/ai_helper');
 const { generateNextEvent } = require('../ai/ai_provider');
@@ -150,6 +153,42 @@ function startWebEditor() {
             }
         }
 
+        if (pathname === '/api/start_campaign') {
+            if (req.method === 'POST') {
+                try {
+                    // 1. Wipe RAG collections
+                    await callRagServer('/clear', { collection: 'dnd_knowledge' }).catch(() => {});
+                    await callRagServer('/clear', { collection: 'dnd_transcripts' }).catch(() => {});
+                    await callRagServer('/clear', { collection: 'dnd_insights' }).catch(() => {});
+
+                    // 2. Reset physical files on disk (the "purge" logic)
+                    const filesToReset = {
+                        'relationships.json': '[]',
+                        'session_notes.json': '[]',
+                        'session_reminders.json': '[]',
+                        'session_state.json': '{"activeScene": null, "activeNpcs": [], "activeQuests": []}',
+                        'ai_memory.json': '{"summaries": []}',
+                        'transcript_log.txt': ''
+                    };
+
+                    Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
+                        const filePath = path.join(TEMP_DATA_ROOT, filename);
+                        try {
+                            fs.writeFileSync(filePath, defaultValue, 'utf8');
+                        } catch (e) {
+                            console.warn(`-> Failed to reset ${filename}:`, e.message);
+                        }
+                    });
+
+                    // 3. Start the new session
+                    startSessionZero();
+                    sendJson(res, 200, { ok: true, message: 'Database and local memory wiped; Session Zero triggered.' });
+                } catch (err) {
+                    sendJson(res, 500, { error: err.message });
+                }
+                return;
+            }
+        }
 
         if (pathname === '/api/rag_query') {
             if (req.method === 'POST') {
@@ -352,7 +391,7 @@ function startWebEditor() {
             }
         }
 
-                if (pathname === '/api/transcript_log' || url.pathname === '/api/transcript_log' || pathname === '/api/transcript_log/') {
+        if (pathname === '/api/transcript_log' || url.pathname === '/api/transcript_log' || pathname === '/api/transcript_log/') {
             if (req.method === 'GET') {
                 const transcriptPath = path.join(TEMP_DATA_ROOT, 'transcript_log.txt');
                                 if (fs.existsSync(transcriptPath)) {
@@ -387,24 +426,20 @@ function startWebEditor() {
             }
         }
 
-        if (pathname === '/api/foundry_entities') {
+        if (pathname === '/api/entities') {
             if (req.method === 'GET') {
                 const worldData = await getAllWorldData();
-                
-                const actors = worldData.actors || [];
-                
-                const characters = actors.filter(a => a.type === 'character' || a.type === 'Player').map(a => a.name).filter(Boolean);
-                const resultCharacters = characters.length > 0 ? characters : actors.map(a => a.name).filter(Boolean);
-                
-                const scenes = (worldData.scenes || []).map(s => s.name).filter(Boolean);
-                
-                const npcs = actors.filter(a => a.type === 'npc' || a.type === 'NonPlayerCharacter').map(a => a.name).filter(Boolean);
-                const resultNpcs = npcs.length > 0 ? npcs : actors.map(a => a.name).filter(Boolean);
+        
+                const allCharacters = (worldData.characters || []).map(c => c.name).filter(Boolean);
+        
+                const allLocations = (worldData.locations || []).map(l => l.name).filter(Boolean);
+        
+                const allItems = (worldData.items || []).map(i => i.name).filter(Boolean);
 
                 sendJson(res, 200, {
-                    characters: resultCharacters,
-                    scenes: scenes,
-                    npcs: resultNpcs
+                    characters: allCharacters,
+                    locations: allLocations,
+                    items: allItems
                 });
                 return;
             }
@@ -463,6 +498,27 @@ function startWebEditor() {
         if (pathname === '/api/character_logs') {
             if (req.method === 'GET') {
                 sendJson(res, 200, loadCharacterLogs());
+                return;
+            }
+        }
+
+        if (pathname === '/api/shutdown') {
+            if (req.method === 'POST') {
+                console.log('-> Manual shutdown triggered. Detecting OS for cleanup...');
+                
+                // Check if we are on Windows or Linux
+                const isWindows = os.platform() === 'win32';
+                
+                // Define command based on OS
+                const killCmd = isWindows 
+                    ? 'taskkill /F /IM python.exe /T && taskkill /F /IM node.exe /T' 
+                    : 'pkill -f python3 && pkill -f node';
+
+                exec(killCmd, (err) => {
+                    if (err) console.error('-> Shutdown error:', err.message);
+                });
+
+                sendJson(res, 200, { ok: true, message: 'All services terminating...' });
                 return;
             }
         }

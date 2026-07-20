@@ -54,6 +54,24 @@ const activeSpeakers = new Set();
 
 const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
 
+function normalizeResponse(aiReply) {
+    if (typeof aiReply !== 'object' || aiReply === null) {
+        return { suggestion: String(aiReply || ''), spokenNarrative: '' };
+    }
+    const sanitize = (val) => {
+        if (typeof val === 'object' && val !== null) {
+            return val.text || val.message || JSON.stringify(val);
+        }
+        return String(val || '');
+    };
+    
+    return {
+        ...aiReply,
+        suggestion: sanitize(aiReply.suggestion),
+        spokenNarrative: sanitize(aiReply.spokenNarrative)
+    };
+}
+
 function saveLlmDebug(debugInfo) {
     try {
         fs.mkdirSync(TEMP_DATA_DIR, { recursive: true });
@@ -92,7 +110,7 @@ async function handleSilenceDriver() {
     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
     `.trim();
 
     const rollingSummary = getRollingSummary();
@@ -123,13 +141,13 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
         stats.lastLatencyMs = latency;
         
         if (aiReply) {
-            console.log(`-> AI Silence evaluation: [Important: ${aiReply.isImportant}] Suggestion: ${aiReply.suggestion || 'None'}`);
+            console.log(`-> AI Silence evaluation: `, JSON.stringify(aiReply));
             
             if (aiReply.spokenNarrative) {
                 console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                 speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
                 
-                                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now()); 
+                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now()); 
             }
 
             const isImportantInsight = aiReply.suggestion && !aiReply.isOOC;
@@ -205,12 +223,31 @@ async function sendDmToOwner(content) {
     return;
 }
 
-client.once('ready', () => {
+client.once('clientReady', () => {
     console.log(`-> DaDAA is ready and logged in as ${client.user.tag}`);
     startWebEditor();
     
     const activeModel = config.LLM;
+    const ollamaEnabled = config.OllamaConfig?.enabled || false;
     const hasKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+
+    if (ollamaEnabled) {
+        console.log(`-> LLM Provider: Ollama (${config.OllamaConfig?.model || 'neural-chat'}) at ${config.OllamaConfig?.baseUrl || 'http://localhost:11434'}`);
+    } else {
+        const availableProviders = [];
+        if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) availableProviders.push('Gemini');
+        if (process.env.ANTHROPIC_API_KEY) availableProviders.push('Anthropic');
+        if (process.env.OPENAI_API_KEY) availableProviders.push('OpenAI');
+    
+        if (availableProviders.length > 0) {
+            console.log(`-> LLM Provider: Cloud (${availableProviders.join(' > ')})`);
+        } else {
+            console.warn(`-> WARNING: No LLM provider configured! Ollama is disabled and no cloud API keys found.`);
+            console.warn(`-> The bot will run but AI responses will be disabled.`);
+        }
+    }
+
+    const anyProviderAvailable = ollamaEnabled || hasKey;
 
     saveLlmDebug({
         timestamp: new Date().toISOString(),
@@ -221,17 +258,18 @@ client.once('ready', () => {
         rollingSummary: 'None',
         fullPrompt: 'No transcripts evaluated yet.',
         rawResponse: { 
-            reason: hasKey 
+            reason: anyProviderAvailable
                 ? 'Awaiting speech trigger...' 
-                : 'ERROR: No API key found. Please create a .env file containing GEMINI_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY to activate live suggestions.' 
+                : 'ERROR: No LLM provider configured. Enable Ollama or add cloud API keys to activate AI responses.'
         },
-        stats: stats
+        stats: stats,
+        providerAvailable: anyProviderAvailable
     });
 
     initializeWorldContext()
         .then((context) => {
             worldContext = context;
-            console.log(`-> Local World Context and ChromaDB RAG Engine initialized successfully.`);
+            console.log(`-> Local World Context and RAG Engine initialized successfully.`);
         })
         .catch((error) => {
             console.error('-> Failed to load world context:', error);
@@ -253,7 +291,7 @@ client.on('messageCreate', async (message) => {
                     if (userObj && (userObj.username || userObj.tag)) {
                         discordName = userObj.username || userObj.tag;
                         
-                        const charName = getBoundCharacterName(discordName); // Checks mapping for bound character
+                        const charName = getBoundCharacterName(discordName);
                         sourceLabel = charName ? charName : discordName;
                     }
                 } catch (e) { /* fallback to id */ }
@@ -261,7 +299,7 @@ client.on('messageCreate', async (message) => {
                 console.log(`\n[Audio Transcribed] ${sourceLabel} (${discordName}): "${transcript}"`);
 
                 recordDiscordUser(discordName);
-                appendTranscript(transcript, sourceLabel, Date.now());
+                appendTranscript(transcript, sourceLabel, Date.now()); 
                 
                 stats.totalUtterances++;
                 
@@ -310,9 +348,9 @@ client.on('messageCreate', async (message) => {
                     }
                     
                     const contextString = `
-Current Scene: ${sessionState.activeScene || 'Unknown'}
-Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+                        Current Scene: ${sessionState.activeScene || 'Unknown'}
+                        Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
+                        Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
                     `.trim();
 
                     const rollingSummary = getRollingSummary();
@@ -341,14 +379,13 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                         .then((aiReply) => {
                             const latency = Date.now() - apiStartTime;
                             stats.lastLatencyMs = latency;
+
+                            console.log("string after normalisation : ", JSON.stringify(aiReply));
                             
                             if (aiReply) {
-                                console.log(`-> AI DM evaluation: [OOC: ${aiReply.isOOC}] [Important: ${aiReply.isImportant}] Suggestion: ${aiReply.suggestion || 'None'}`);
-                                
                                 if (aiReply.spokenNarrative) {
                                     console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                                     speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
-                                    
                                     appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now()); 
                                 } else {
                                     console.log(`-> WARNING: AI generated response but no spokenNarrative`); 
@@ -370,7 +407,6 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                                     console.log(`-> Event Evaluation [${currentEventData.activeEvent.title}]: ${status.toUpperCase()}`);
 
                                     if (status === 'resolved') {
-                                        console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
                                         sendDmToOwner(`🎉 Event Resolved: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
                                         
                                         currentEventData.archivedEvents.push({
@@ -391,14 +427,10 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
                                             }).catch(err => console.error('-> Failed to generate new event:', err));
 
                                     } else if (status === 'escalated' || status === 'evolved') {
-                                        console.log(`-> Event Morphing: Updating stakes/complications.`);
-                                        
                                         currentEventData.activeEvent.description = aiReply.updatedEventDescription || currentEventData.activeEvent.description;
                                         currentEventData.activeEvent.complication = aiReply.updatedComplication || currentEventData.activeEvent.complication;
                                         currentEventData.activeEvent.stakes = aiReply.updatedStakes || currentEventData.activeEvent.stakes;
-                                        
                                         fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                        
                                         sendDmToOwner(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title}\nNew Twist: ${currentEventData.activeEvent.complication}`);
                                     }
                                 }
@@ -482,49 +514,6 @@ Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record
         return;
     }
 
-    if (message.content === '!log') {
-        message.reply(`Transcript log:\n${readTranscriptLog() || 'No transcript yet.'}`);
-        return;
-    }
-
-    if (message.content === '!context') {
-        if (!worldContext) {
-            message.reply('World context has not loaded yet.');
-            return;
-        }
-
-        const transcriptLog = readTranscriptLog();
-        const latestTranscript = transcriptLog
-            .split('\n')
-            .filter(Boolean)
-            .slice(-3) 
-            .map(line => line.replace(/^\[[^\]]+\]\s+\[[^\]]+\]\s+/, ''))
-            .join(' ') || 'No transcript yet.';
-
-        const sessionState = loadSessionState();
-        
-        const relevantRecords = await findRelevantRecords(latestTranscript);
-        
-        const contextString = `
-Current Scene: ${sessionState.activeScene || 'Unknown'}
-Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-Foundry Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
-        `.trim();
-
-        const rollingSummary = getRollingSummary();
-        const prompt = buildPrompt(latestTranscript, contextString, rollingSummary);
-        callModel(prompt)
-            .then((aiReply) => {
-                const reply = aiReply?.suggestion || 'No relevant context to provide.';
-                message.reply(reply);
-            });
-        return;
-    }
-
-    if (message.content === '!dashboard') {
-        message.reply('Open the dashboard at http://localhost:8000/dashboard.html');
-        return;
-    }
 });
 
 client.on('dndSpeechStart', (userId) => {

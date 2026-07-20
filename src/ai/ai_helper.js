@@ -1,5 +1,9 @@
+// src/ai/ai_helper.js
 const fs = require('fs');
 const path = require('path');
+const { isSessionZeroActive, addSessionZeroInput, endSessionZero } = require('../sessions/session_manager');
+const { callModel, generateNextEvent } = require('./ai_provider');
+const { callRagServer } = require('./context_manager');
 
 const memoryPath = path.join(__dirname, '..', '..', 'temp_data', 'ai_memory.json');
 const sessionStatePath = path.join(__dirname, '..', '..', 'temp_data', 'session_state.json');
@@ -43,8 +47,6 @@ function getRollingSummary() {
 }
 
 async function updateRollingSummary(newTranscriptLines) {
-    // Local require to avoid circular dependency
-    const { callModel } = require('./ai_provider');
     const memory = loadMemory();
     const currentSummary = memory.rollingSummary || 'No key events recorded yet.';
     const linesText = newTranscriptLines.join('\n');
@@ -63,10 +65,7 @@ ${linesText}
 """
 
 STRICT GUIDELINES:
-1. Update the Running Summary to include any new key events, actions, combat encounters, roleplaying developments, or items found.
-2. Maintain a bullet-pointed list (3-6 bullets maximum) of the most important developments.
-3. Keep it brief, atmospheric, and highly functional for an AI assistant. Eliminate clutter, jokes, or table talk.
-4. Output ONLY the new bulleted running summary text. Do not include any intro, outro, or wrapper formatting.
+Update the Running Summary to include any new key events, actions, combat encounters, roleplaying developments, or items found. Maintain a short list of the most important developments. Keep it brief, atmospheric, and highly functional for an AI assistant. Eliminate clutter, jokes, or table talk. Output ONLY the new running summary text. Do not include any intro, outro, or wrapper formatting. Do not use bullet points or markdown lists.
 `;
 
     try {
@@ -96,11 +95,59 @@ function loadLocalSessionState() {
     }
 }
 
-// REMOVED knowledgeIndex argument — relies entirely on the RAG vector search now
-async function summarizeTranscript(transcript) {
+async function processSessionZeroIntent(source, text) {
+    if (!isSessionZeroActive()) return false;
+
+    addSessionZeroInput(source, text);
+
+    const finishIntentRegex = /(we (are|'re) (done|finished|good|set))|(that's (it|all))|(all done)|(generate (it|the world) now)|(let's start)/i;
+    
+    if (finishIntentRegex.test(text)) {
+        const compiledIdeas = endSessionZero();
+        console.log('-> Session Zero complete. Generating lore...');
+        
+        const prompt = `You are an expert dungeon master. Generate a cohesive world setting based on the following player ideas:
+        
+        ${compiledIdeas}
+        
+        Write one paragraph for the geography, followed by one paragraph for the factions, and one paragraph for the recent history. Do not use bullet points or markdown lists in your response. Output only the lore paragraphs.`;
+        
+        try {
+            const response = await callModel(prompt);
+            const loreText = response.suggestion || response || '';
+            
+            if (loreText) {
+                if (callRagServer) {
+                    await callRagServer('/add', {
+                        collection: 'dnd_knowledge',
+                        documents: [loreText],
+                        metadatas: [{ category: 'lore', name: 'World Setting', source: 'Session Zero' }],
+                        ids: [`lore_${Date.now()}`]
+                    });
+                    console.log('-> Lore saved to ChromaDB.');
+                }
+                
+                const eventObj = await generateNextEvent([], 'New Campaign started. Players just created the world.', 'Generate an introduction session event.');
+                const eventPath = path.join(__dirname, '..', '..', 'temp_data', 'current_event.json');
+                fs.writeFileSync(eventPath, JSON.stringify({ activeEvent: eventObj.activeEvent, archivedEvents: [] }, null, 2), 'utf8');
+                console.log('-> Intro event generated.');
+            }
+        } catch(e) {
+            console.error('-> Lore generation failed:', e.message);
+        }
+    }
+    return true; 
+}
+
+async function summarizeTranscript(transcript, source = 'System') {
     const normalizedTranscript = String(transcript || '').trim();
     if (!normalizedTranscript) {
         return { transcript, relevantRecords: [], advice: 'No transcript provided.' };
+    }
+
+    const handledBySessionZero = await processSessionZeroIntent(source, normalizedTranscript);
+    if (handledBySessionZero) {
+        return { transcript: normalizedTranscript, relevantRecords: [], advice: 'Session Zero active. Buffering ideas.' };
     }
 
     const { findRelevantRecords } = require('./context_manager');
@@ -124,24 +171,27 @@ function buildAdvice(transcript, relevantRecords) {
 function rememberAiInsight(aiResponse, transcriptChunk) {
     if (!aiResponse || aiResponse.isOOC || !aiResponse.isImportant) return null;
 
+    let parsedSuggestion = aiResponse.suggestion;
+    if (typeof parsedSuggestion === 'object' && parsedSuggestion !== null) {
+        parsedSuggestion = parsedSuggestion.text || parsedSuggestion.message || JSON.stringify(parsedSuggestion);
+    }
+
     const memory = loadMemory();
     const timestamp = new Date().toISOString();
     memory.summaries.push({
         timestamp,
         type: 'ai_insight',
-        suggestion: aiResponse.suggestion,
+        suggestion: parsedSuggestion,
         transcript: transcriptChunk,
         importance: aiResponse.isImportant
     });
     memory.summaries = memory.summaries.slice(-30);
     saveMemory(memory);
 
-    // Save insight to RAG Database asynchronously
-    const { callRagServer } = require('./context_manager');
     if (callRagServer) {
         callRagServer('/add', {
             collection: 'dnd_insights',
-            documents: [aiResponse.suggestion],
+            documents: [parsedSuggestion],
             metadatas: [{ timestamp, transcript: transcriptChunk || '' }],
             ids: [`insight_${Date.now()}_${Math.floor(Math.random() * 1000)}`]
         }).catch(() => {});
@@ -155,5 +205,6 @@ module.exports = {
     summarizeTranscript,
     rememberAiInsight,
     getRollingSummary,
-    updateRollingSummary
+    updateRollingSummary,
+    processSessionZeroIntent
 };

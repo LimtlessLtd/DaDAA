@@ -1,3 +1,4 @@
+// src/ai/context_manager.js
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -101,41 +102,73 @@ function callRagServer(apiPath, data) {
 }
 
 async function syncKnowledgeToRAG(worldData) {
-    console.log('-> Syncing Foundry data to RAG database...');
+    console.log('-> Syncing game data to RAG database...');
     worldDbCache.clear();
     exactNameCache.clear();
 
     const recordsForRag = [];
+    const collections = {
+        characters: 'dnd_characters',
+        locations: 'dnd_locations',
+        items: 'dnd_items',
+        quests: 'dnd_quests',
+        lore: 'dnd_lore',
+        encounters: 'dnd_encounters',
+        sessions: 'dnd_sessions'
+    };
 
-    // 1. Populate lightweight caches and prep RAG payload
     Object.entries(worldData).forEach(([category, items]) => {
         (items || []).forEach(record => {
-            if (!record || !record._id) return;
+            if (!record) return;
             
-            const name = record.name || record.title || record.label || record._id;
+            const id = record.id || `${category}_${Math.random().toString(36).substr(2, 9)}`;
+            const name = record.name || record.title || id;
             const description = extractDescription(record);
-            const enrichedRecord = { ...record, category, name, description };
+            const enrichedRecord = { ...record, id, category, name, description };
             
-            // Store full object in memory for exact lookups
-            worldDbCache.set(record._id, enrichedRecord);
-            exactNameCache.set(normalizeText(name), record._id);
+            worldDbCache.set(id, enrichedRecord);
+            exactNameCache.set(normalizeText(name), id);
 
-            recordsForRag.push(enrichedRecord);
+            recordsForRag.push({ ...enrichedRecord, collection: collections[category] || 'dnd_knowledge' });
         });
     });
 
-    // 2. Batch upload to RAG
+    const recordsByCollection = {};
+    recordsForRag.forEach(record => {
+        const collection = record.collection;
+        if (!recordsByCollection[collection]) {
+            recordsByCollection[collection] = [];
+        }
+        recordsByCollection[collection].push(record);
+    });
+
     try {
         const BATCH_SIZE = 50;
-        for (let i = 0; i < recordsForRag.length; i += BATCH_SIZE) {
-            const batch = recordsForRag.slice(i, i + BATCH_SIZE);
-            const documents = batch.map(r => `${r.name}\n${r.description || ''}`);
-            const metadatas = batch.map(r => ({ source: 'foundry_vtt', name: r.name, category: r.category }));
-            const ids = batch.map(r => r._id);
-            
-            await callRagServer('/add', { collection: 'dnd_knowledge', documents, metadatas, ids });
+        for (const [collection, records] of Object.entries(recordsByCollection)) {
+            for (let i = 0; i < records.length; i += BATCH_SIZE) {
+                const batch = records.slice(i, i + BATCH_SIZE);
+                const documents = batch.map(r => {
+                    const doc = `${r.name}\n${r.description || ''}`;
+                    return typeof doc === 'string' ? doc : JSON.stringify(doc);
+                });
+                const metadatas = batch.map(r => ({ 
+                    source: 'game_data', 
+                    name: r.name, 
+                    type: r.category,
+                    entity_id: r.id
+                }));
+                const ids = batch.map(r => r.id);
+                
+                await callRagServer('/add', { 
+                    collection: collection, 
+                    documents: documents, 
+                    metadatas: metadatas, 
+                    ids: ids 
+                });
+            }
+            console.log(`-> Synced ${records.length} records to ${collection}`);
         }
-        console.log(`-> Successfully synced ${recordsForRag.length} records to RAG database.`);
+        console.log(`-> Successfully synced ${recordsForRag.length} total records to RAG database.`);
     } catch (e) {
         console.warn('-> Failed to sync to RAG server:', e.message);
     }
@@ -144,14 +177,11 @@ async function syncKnowledgeToRAG(worldData) {
 async function resolveRecordReference(input) {
     if (!input) return null;
 
-    // 1. O(1) Exact ID Match
     if (worldDbCache.has(input)) return worldDbCache.get(input);
 
-    // 2. O(1) Exact Name Match
     const normalized = normalizeText(input);
     if (exactNameCache.has(normalized)) return worldDbCache.get(exactNameCache.get(normalized));
 
-    // 3. Fallback: RAG Semantic Search
     try {
         const response = await callRagServer('/query', {
             collection: 'dnd_knowledge',
@@ -186,10 +216,9 @@ async function findRelevantRecords(text) {
         });
         
         if (response.results?.ids?.[0]?.length > 0) {
-            // Map the vector IDs back to the FULL objects in our cache
             return response.results.ids[0]
                 .map(id => worldDbCache.get(id))
-                .filter(Boolean); // Filter out any undefined just in case
+                .filter(Boolean);
         }
     } catch (e) {
         console.warn('-> RAG query failed:', e.message);
@@ -237,14 +266,10 @@ function migrateRelationships() {
     const relationships = loadRelationships();
     let changed = false;
 
-    // Use our exactNameCache to find IDs based on labels
     for (const entry of relationships) {
         if ((!entry.sourceId || !entry.targetId) && entry.source && entry.target) {
-            const sNameMatch = entry.source.split(':').pop();
-            const tNameMatch = entry.target.split(':').pop();
-            
-            const sId = exactNameCache.get(normalizeText(sNameMatch)) || null;
-            const tId = exactNameCache.get(normalizeText(tNameMatch)) || null;
+            const sId = exactNameCache.get(normalizeText(entry.source)) || null;
+            const tId = exactNameCache.get(normalizeText(entry.target)) || null;
 
             if (sId && !entry.sourceId) {
                 entry.sourceId = sId;
@@ -284,7 +309,6 @@ function appendTranscript(text, source = 'discord', customTimestamp = null) {
                         const sep = lastText.match(/[.!?]$/) ? ' ' : ' ';
                         const newText = `${lastText}${sep}${text}`.replace(/\s+/g, ' ').trim();
                         lines[lines.length - 1] = `[${m[1]}] [${source}] ${newText}`;
-                        // Limit to last 1000 lines
                         if (lines.length > 1000) {
                             lines.splice(0, lines.length - 1000);
                         }
@@ -299,7 +323,6 @@ function appendTranscript(text, source = 'discord', customTimestamp = null) {
         const line = `[${timestamp}] [${source}] ${text}`;
         fs.appendFileSync(transcriptLogPath, `${line}\n`, 'utf8');
     
-    // Ensure file doesn't grow beyond 1000 lines
     try {
         const contents = fs.readFileSync(transcriptLogPath, 'utf8');
         const lines = contents.split('\n').filter(Boolean);
@@ -311,7 +334,6 @@ function appendTranscript(text, source = 'discord', customTimestamp = null) {
         console.warn('-> Failed to limit transcript file size:', e.message);
     }
     
-    // Store in RAG database for semantic search
     callRagServer('/add', {
         collection: 'dnd_transcripts',
         documents: [text],
@@ -333,7 +355,6 @@ function readTranscriptLog() {
             lines = lines.slice(-1000);
         }
         
-        // Strictly sort lines by the ISO timestamp inside the first brackets
         lines.sort((a, b) => {
             const matchA = a.match(/^\[(.+?)\]/);
             const matchB = b.match(/^\[(.+?)\]/);
@@ -368,7 +389,6 @@ async function buildDmSuggestion(transcript, relationships) {
 async function initializeWorldContext() {
     const worldData = await getAllWorldData();
     
-    // Syncs to RAG and populates the ID maps
     await syncKnowledgeToRAG(worldData);
 
     let relationships = loadRelationships();
@@ -380,14 +400,13 @@ async function initializeWorldContext() {
         if (mig.migrated) console.log('-> Migrated relationships to include ids');
     } catch (e) {}
 
-    // Cleanup stale relationships linking to deleted Foundry items
     if (relationships.length > 0 && worldDbCache.size > 0) {
         const cleaned = relationships.filter((r) => {
             try {
                 if (r.sourceId && r.targetId) {
                     return worldDbCache.has(r.sourceId) && worldDbCache.has(r.targetId);
                 }
-                return true; // Keep manual label-only links
+                return true;
             } catch (e) {
                 return false;
             }

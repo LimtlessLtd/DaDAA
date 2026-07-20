@@ -1,4 +1,4 @@
-// src/voice_manager.js
+// src/voice/voice_manager.js
 const { joinVoiceChannel, EndBehaviorType, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
 const prism = require('prism-media');
 const WebSocket = require('ws');
@@ -16,6 +16,9 @@ const audioPlayer = createAudioPlayer();
 let currentVoiceConnection = null;
 let ttsQueue = [];
 let isPlayingTts = false;
+
+// Determine python command based on OS
+const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
 
 function ensureSocket(userId) {
     if (!userId) return null;
@@ -44,15 +47,6 @@ function ensureSocket(userId) {
         if (socketsByUser.get(userId) === socket) {
             socketsByUser.delete(userId);
         }
-    });
-    socket.on('unexpected-response', (req, res) => {
-        console.error(`-> Transcription unexpected response for user ${userId}: ${res.statusCode}`);
-        if (socketsByUser.get(userId) === socket) {
-            socketsByUser.delete(userId);
-        }
-    });
-    socket.on('pong', () => {
-        // Keepalive
     });
     socket.on('message', (message) => {
         try {
@@ -93,12 +87,9 @@ function joinAndListen(client, guildId, channelId, handler) {
     audioPlayer.play(createAudioResource(new Silence(), { inputType: StreamType.Raw }));
 
     connection.receiver.speaking.on('start', (userId) => {
-        if (activeStreams.has(userId)) {
-            return;
-        }
+        if (activeStreams.has(userId)) return;
 
         const socket = ensureSocket(userId);
-        
         client.emit('dndSpeechStart', userId);
         
         if (!utteranceStartTimes.has(userId)) {
@@ -113,18 +104,14 @@ function joinAndListen(client, guildId, channelId, handler) {
 
         const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 1, frameSize: 960 });
 
-audioStream.on('error', (err) => {
+        audioStream.on('error', (err) => {
             console.warn(`-> Audio stream error for user ${userId}:`, err.message);
             activeStreams.delete(userId);
             audioStream.destroy();
             client.emit('dndSpeechEnd', userId); 
         });
 
-        opusDecoder.on('error', (err) => {
-            console.warn(`-> Opus decoder error for user ${userId} (corrupted packet discarded):`, err.message);
-        });
-
-                audioStream.pipe(opusDecoder).on('data', (chunk) => {
+        audioStream.pipe(opusDecoder).on('data', (chunk) => {
             if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(chunk);
             }
@@ -151,12 +138,17 @@ audioPlayer.on('error', error => {
 });
 
 function speakText(text, profile = 'narrator') {
-    if (!text || !currentVoiceConnection) return;
+    if (!text || !currentVoiceConnection) {
+        console.warn('-> speakText: Missing text or voice connection');
+        return;
+    }
     ttsQueue.push({ text, profile });
     processTtsQueue();
 }
 
 function processTtsQueue() {
+    console.log("processing TTS Queue");
+
     if (isPlayingTts || ttsQueue.length === 0 || !currentVoiceConnection) return;
 
     isPlayingTts = true;
@@ -164,7 +156,8 @@ function processTtsQueue() {
     const text = item.text;
     const profile = item.profile || 'narrator';
     
-    const tempAudioPath = path.join(__dirname, '..', '..', 'temp_data', 'tts_output.wav');
+    // Unique filename per request
+    const tempAudioPath = path.join(__dirname, '..', '..', 'temp_data', `tts_${Date.now()}.wav`);
     const pythonScript = path.join(__dirname, 'local_tts.py');
 
     const dataDir = path.dirname(tempAudioPath);
@@ -172,9 +165,21 @@ function processTtsQueue() {
         fs.mkdirSync(dataDir, { recursive: true });
     }
 
-    execFile('python', [pythonScript, text, tempAudioPath, profile], (error) => {
+    execFile(pythonCommand, [pythonScript, text, tempAudioPath, profile], (error, stdout, stderr) => {
         if (error) {
             console.error('-> TTS Generation Error:', error.message);
+            console.error('-> Python Stderr:', stderr);
+            isPlayingTts = false;
+            processTtsQueue();
+            return;
+        }
+
+        if(!fs.existsSync(pythonScript)){
+            console.error('local tts python script not found : ', pythonScript);
+        }
+
+        if (!fs.existsSync(tempAudioPath)) {
+            console.error('-> TTS File missing:', tempAudioPath);
             isPlayingTts = false;
             processTtsQueue();
             return;

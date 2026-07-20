@@ -1,3 +1,4 @@
+// src/ai/ai_provider.js
 const https = require('https');
 const http = require('http');
 const config = require('../../config.json');
@@ -8,24 +9,14 @@ function buildPrompt(transcript, context, rollingSummary = '', characterMapStrin
 STRICT OUTPUT FORMAT:
 Respond ONLY with a JSON object:
 {
-  "isOOC": true/false,
-  "isImportant": true/false,
-  "suggestion": "Your internal reasoning or mechanical ruling here (this is not read aloud to players)",
-  "reason": "Why this is important",
-  "spokenNarrative": "If isImportant is true, you MUST write the narrative, dialogue, hint, or skill check request here so it is spoken aloud to the players. Do not hide important hints in 'suggestion'.",
-  "voiceProfile": "Optional: One of [narrator, goblin, old_man, old_woman, man, woman, young_man, young_woman, child_boy, child_girl, monster] to match the character speaking. Default is narrator.",
-  "characterLogs": [
-    {
-      "character": "Character Name",
-      "log": "A brief description of the event, trauma, NPC interaction, or plot point",
-      "type": "trauma | relationship | plot"
-    }
-  ],
-  "eventStatus": "stable | resolved | escalated | evolved",
-  "resolutionSummary": "If eventStatus is 'resolved', describe how the players solved the current event. Otherwise, leave empty.",
-  "updatedEventDescription": "If eventStatus is 'evolved', write the updated description of the situation. Otherwise, leave empty.",
-  "updatedComplication": "If eventStatus is 'escalated' or 'evolved', write the new immediate obstacle pushing back against them. Otherwise, leave empty.",
-  "updatedStakes": "If eventStatus is 'escalated' or 'evolved', write the new stakes (what happens if they fail). Otherwise, leave empty."
+    "spokenNarrative": "If isImportant is true, you MUST write the narrative, dialogue, hint, or skill check request here so it is spoken aloud to the players. Do not hide important hints in 'suggestion'.",
+    "suggestion": "Your internal reasoning or mechanical ruling here (this is not read aloud to players)",
+    "reason": "Why this is important",
+    "eventStatus": "stable | resolved | escalated | evolved",
+    "voiceProfile": "A description of the narration voice",
+    "isImportant": true/false,
+    "isOOC": true/false,
+    "resolutionSummary": "How the event has changed or evolved or escalated or been resolved.",
 }
 
 GUIDELINES:
@@ -71,43 +62,66 @@ Live Transcript:
 "${transcript}"`;
 }
 
-function callModel(prompt) {
-    // Check if Ollama is enabled
+async function callModel(prompt) {
+    let botResponse;
+    
     if (config.OllamaConfig?.enabled) {
-        return callOllama(prompt);
-    }
+        try {
+            botResponse = await callOllama(prompt);
+            return normaliseJson(botResponse);
+        } catch (error) {
+            console.warn('-> Ollama call failed, falling back to cloud providers:', error.message);
+            botResponse = await fallbackToCloudProviders(prompt);
+            return normaliseJson(botResponse);
+        }
+    } 
+    
+    botResponse = await fallbackToCloudProviders(prompt);
+    return normaliseJson(botResponse);
+}
+
+function fallbackToCloudProviders(prompt) {
+    const keys = {
+        gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+        anthropic: process.env.ANTHROPIC_API_KEY,
+        openai: process.env.OPENAI_API_KEY
+    };
 
     const modelName = String(config.LLM || '').toLowerCase();
-    let provider = 'openai';
-
-    if (modelName.includes('gemini')) {
-        provider = 'gemini';
-    } else if (modelName.includes('claude')) {
-        provider = 'anthropic';
-    } else if (modelName.includes('gpt') || modelName.includes('o1')) {
-        provider = 'openai';
-    } else {
-        provider = process.env.AI_PROVIDER || 'openai';
-    }
-
+    let provider = null;
     let apiKey = null;
-    if (provider === 'gemini') {
-        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-    } else if (provider === 'anthropic') {
-        apiKey = process.env.ANTHROPIC_API_KEY;
-    } else {
-        apiKey = process.env.OPENAI_API_KEY;
+
+    if ((modelName.includes('gemini') || !modelName || modelName.includes('flash')) && keys.gemini) {
+        provider = 'gemini';
+        apiKey = keys.gemini;
+    } else if (modelName.includes('claude') && keys.anthropic) {
+        provider = 'anthropic';
+        apiKey = keys.anthropic;
+    } else if ((modelName.includes('gpt') || modelName.includes('o1')) && keys.openai) {
+        provider = 'openai';
+        apiKey = keys.openai;
+    }
+    
+    if (!provider || !apiKey) {
+        if (keys.gemini) {
+            provider = 'gemini';
+            apiKey = keys.gemini;
+        } else if (keys.anthropic) {
+            provider = 'anthropic';
+            apiKey = keys.anthropic;
+        } else if (keys.openai) {
+            provider = 'openai';
+            apiKey = keys.openai;
+        }
     }
 
-    if (!apiKey) {
-        apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
-    }
-
-    if (!apiKey) {
-        console.warn('-> AI Provider: No API key found in .env');
+    if (!provider || !apiKey) {
+        console.warn('-> AI Provider: No valid cloud API keys found in .env (tried Gemini -> Anthropic -> OpenAI)');
         return Promise.resolve(null);
     }
 
+    console.log(`-> Using ${provider} as LLM provider`);
+    
     if (provider === 'gemini') {
         return callGemini(apiKey, prompt).then(text => {
             try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
@@ -132,16 +146,21 @@ function callOllama(prompt) {
     const body = JSON.stringify({
         model: model,
         prompt: prompt,
-        stream: false
+        stream: false,
+        format: "json"
     });
 
     return requestOllama(baseUrl, body).then(text => {
-        try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
+        try { 
+            return text;
+        }
+        catch(e) { 
+            return text; 
+        }
     });
 }
 
 function callGemini(apiKey, prompt) {
-    // Sanitize any typographic en-dashes (–) or em-dashes (—) into standard hyphens (-)
     const model = String(config.LLM || 'gemini-1.5-flash')
         .replace(/[\u2013\u2014]/g, '-')
         .trim();
@@ -249,7 +268,6 @@ function requestOllama(baseUrl, body) {
                     if (res.statusCode && res.statusCode >= 400) {
                         reject(new Error(`Ollama API Error (HTTP ${res.statusCode}): ${data}`));
                     } else {
-                        // Ollama returns newline-delimited JSON, need to parse the response
                         const response = JSON.parse(data);
                         resolve(response.response || data);
                     }
@@ -326,14 +344,24 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
   }
 }`;
 
-    // 1. Primary Check: Default to Ollama if enabled
     if (config.OllamaConfig?.enabled) {
         return callOllama(prompt).then(res => {
-            return (typeof res === 'object') ? res : null;
+            try {
+                return (typeof res === 'object') ? res : JSON.parse(res);
+            } catch(e) {
+                console.warn('-> Ollama response parsing failed, falling back to cloud providers:', e.message);
+                return fallbackToCloudProvidersForEvents(prompt);
+            }
+        }).catch(error => {
+            console.warn('-> Ollama call failed for event generation, falling back to cloud providers:', error.message);
+            return fallbackToCloudProvidersForEvents(prompt);
         });
     }
+    
+    return fallbackToCloudProvidersForEvents(prompt);
+}
 
-    // Gather available API keys
+function fallbackToCloudProvidersForEvents(prompt) {
     const keys = {
         gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
         anthropic: process.env.ANTHROPIC_API_KEY,
@@ -344,8 +372,7 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
     let provider = null;
     let apiKey = null;
 
-    // 2. Check if config.LLM forces a specific available provider
-    if (modelName.includes('gemini') && keys.gemini) {
+    if ((modelName.includes('gemini') || !modelName || modelName.includes('flash')) && keys.gemini) {
         provider = 'gemini';
         apiKey = keys.gemini;
     } else if (modelName.includes('claude') && keys.anthropic) {
@@ -354,9 +381,8 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
     } else if ((modelName.includes('gpt') || modelName.includes('o1')) && keys.openai) {
         provider = 'openai';
         apiKey = keys.openai;
-    } 
+    }
     
-    // 3. Waterfall Fallback: Priority order Gemini -> Anthropic -> OpenAI
     if (!provider || !apiKey) {
         if (keys.gemini) {
             provider = 'gemini';
@@ -370,12 +396,13 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
         }
     }
 
-    // Fail early if no provider or keys are available
     if (!provider || !apiKey) {
-        console.warn('-> AI Provider: Ollama is disabled and no valid cloud API keys were found.');
+        console.warn('-> AI Provider: Ollama is disabled and no valid cloud API keys found for event generation (tried Gemini -> Anthropic -> OpenAI)');
         return Promise.resolve(null);
     }
 
+    console.log(`-> Using ${provider} as LLM provider for event generation`);
+    
     let promise;
     if (provider === 'gemini') {
         promise = callGemini(apiKey, prompt);
@@ -397,6 +424,60 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
             return null;
         }
     });
+}
+
+
+
+function normaliseJson(input) {
+    if (typeof input === 'object' && input !== null) {
+        return flatten(input);
+    }
+    if (typeof input !== 'string') return input;
+    
+    let str = input.replace(/```(?:json|javascript|js)?/gi, '').replace(/```/g, '').trim();
+    
+    const start = str.indexOf('{');
+    const end = str.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+        str = str.slice(start, end + 1);
+    }
+
+    str = str
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
+        .replace(/\bTrue\b/g, 'true')
+        .replace(/\bFalse\b/g, 'false')
+        .replace(/\bNone\b/g, 'null');
+
+    let parsed;
+
+    try {
+        parsed = JSON.parse(str);
+    } catch (e1) {
+        try {
+            parsed = new Function(`"use strict"; return (${str});`)();
+        } catch (e2) {
+            const cleaned = str
+                .replace(/,\s*([\}\]])/g, '$1')
+                .replace(/[\r\n]+/g, ' ');
+            parsed = new Function(`"use strict"; return (${cleaned});`)();
+        }
+    }
+
+    return flatten(parsed);
+}
+
+function flatten(obj, result = {}) {
+    for (const key of Object.keys(obj)) {
+        const val = obj[key];
+
+        if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+            flatten(val, result);
+        } else {
+            result[key] = val;
+        }
+    }
+    return result;
 }
 
 module.exports = { buildPrompt, callModel, generateNextEvent };

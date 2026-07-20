@@ -1,3 +1,4 @@
+# server/server.py
 import asyncio
 import json
 import os
@@ -39,15 +40,24 @@ def resample_to_16k(samples, source_rate=48000, target_rate=16000):
         return samples[::step]
 
 def run_transcription(full_audio):
-    initial_prompt = "D&D, Dungeons and Dragons, RPG, tabletop, Dungeon Master, DM, Foundry VTT, spell, dice roll, d20, combat."
+    initial_prompt = "D&D, Dungeons and Dragons, RPG, role, playing, game, Dungeon Master, DM, spells, dice rolls, d20, combats, NPCs, characters."
     segments, _ = model.transcribe(
-        full_audio,
-        beam_size=3,
-        language="en",
-        initial_prompt=initial_prompt,
-        condition_on_previous_text=False
-    )
-    return ' '.join(segment.text.strip() for segment in segments if segment.text and segment.text.strip())
+            full_audio,
+            beam_size=3,
+            language="en",
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=False
+        )
+        
+    text = ' '.join(segment.text.strip() for segment in segments if segment.text and segment.text.strip())
+    prompt_keywords = {w.strip(".,").lower() for w in initial_prompt.split()}
+    text_words = [w.strip(".,").lower() for w in text.split()]
+    if len(text_words) > 0 and len(text_words) <= len(prompt_keywords) + 2:
+        match_count = sum(1 for w in text_words if w in prompt_keywords)
+        if match_count / max(len(text_words), 1) > 0.7:
+            return ""
+
+    return text
 
 async def audio_handler(websocket):
     user_id = None
