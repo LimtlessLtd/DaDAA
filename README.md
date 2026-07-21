@@ -13,7 +13,7 @@ A Discord bot that acts as an AI Dungeon Master for Dungeons & Dragons games.
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and add your API keys, if you just want to use Ollama you do not need to create your own .env file.
+1. Rename `.env.example` to `.env` and add your API keys, if you just want to use Ollama you do not need to create your own .env file.
 2. Update `config.json` with your preferred settings, if using the default Ollama (local LLM), please follow the steps below to setup Ollama.
 3. Run `npm install` to install node dependencies
 4. Run `pip install requirements.txt` to install python dependencies
@@ -24,7 +24,7 @@ A Discord bot that acts as an AI Dungeon Master for Dungeons & Dragons games.
 Ollama is the **default and recommended** provider when enabled. To use Ollama:
 
 1. Install Ollama from [ollama.ai](https://ollama.ai)
-2. Pull a model: `ollama pull neural-chat` (or other compatible models)
+2. Pull a model: `ollama pull qwen3.5` (or other compatible models)
 3. Ensure Ollama is running by going to the correct local URL (usually `http://localhost:11434`)
 4. Ensure your `config.json` looks like the following:
 
@@ -34,7 +34,7 @@ Ollama is the **default and recommended** provider when enabled. To use Ollama:
   "OllamaConfig": {
     "enabled": true,
     "baseUrl": "http://localhost:11434",
-    "model": "neural-chat"
+    "model": "qwen3.5"
   }
 }
 ```

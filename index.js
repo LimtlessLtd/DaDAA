@@ -118,7 +118,9 @@ Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`)
     const playerLogsStr = getPlayerLogsString();
     const prompt = buildPrompt(fakeTranscript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
     
-    const activeModelName = config.LLM || 'Unknown Model';
+    const activeModel = config.OllamaConfig?.enabled 
+        ? config.OllamaConfig?.model || 'neural-chat' 
+        : config.LLM;
 
     saveLlmDebug({
         timestamp: new Date().toISOString(),
@@ -154,7 +156,6 @@ Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`)
             if (isImportantInsight) {
                 stats.importantInsights++;
                 rememberAiInsight(aiReply, "Silence");
-                sendDmToOwner(`DM guidance (Silence Driver):\n${aiReply.suggestion}`);
             }
 
             if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
@@ -167,7 +168,6 @@ Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`)
 
                 if (status === 'resolved') {
                     console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
-                    sendDmToOwner(`🎉 Event Resolved: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
                     
                     currentEventData.archivedEvents.push({
                         title: currentEventData.activeEvent.title,
@@ -182,20 +182,15 @@ Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`)
                             if (newEventObj && newEventObj.activeEvent) {
                                 currentEventData.activeEvent = newEventObj.activeEvent;
                                 fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                sendDmToOwner(`New Event Triggered: ${newEventObj.activeEvent.title}`);
                             }
                         }).catch(err => console.error('-> Failed to generate new event:', err));
 
                 } else if (status === 'escalated' || status === 'evolved') {
                     console.log(`-> Event Morphing: Updating stakes/complications.`);
                     
-                    currentEventData.activeEvent.description = aiReply.updatedEventDescription || currentEventData.activeEvent.description;
-                    currentEventData.activeEvent.complication = aiReply.updatedComplication || currentEventData.activeEvent.complication;
-                    currentEventData.activeEvent.stakes = aiReply.updatedStakes || currentEventData.activeEvent.stakes;
+                    currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
                     
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                    
-                    sendDmToOwner(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title}\nNew Twist: ${currentEventData.activeEvent.complication}`);
                 }
             }
             
@@ -219,15 +214,13 @@ Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`)
     silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
 }
 
-async function sendDmToOwner(content) {
-    return;
-}
-
 client.once('clientReady', () => {
     console.log(`-> DaDAA is ready and logged in as ${client.user.tag}`);
     startWebEditor();
     
-    const activeModel = config.LLM;
+    const activeModel = config.OllamaConfig?.enabled 
+        ? config.OllamaConfig?.model || 'neural-chat' 
+        : config.LLM;
     const ollamaEnabled = config.OllamaConfig?.enabled || false;
     const hasKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
 
@@ -329,7 +322,6 @@ client.on('messageCreate', async (message) => {
                     if (triggered.length > 0) {
                         const dmBody = triggered.map((note) => `Trigger: ${note.trigger}\nNote: ${note.note}`).join('\n\n');
                         console.log('-> Triggered session notes:', dmBody);
-                        sendDmToOwner(`Session reminder triggered:\n${dmBody}`);
                     }
 
                     const relevantRecords = await findRelevantRecords(transcript);
@@ -358,7 +350,9 @@ client.on('messageCreate', async (message) => {
                     const playerLogsStr = getPlayerLogsString();
                     const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
                     
-                    const activeModelName = config.LLM || 'Unknown Model';
+                    const activeModelName = config.OllamaConfig?.enabled 
+                        ? config.OllamaConfig?.model || 'neural-chat' 
+                        : config.LLM || 'Unknown Model';
 
                     saveLlmDebug({
                         timestamp: new Date().toISOString(),
@@ -395,7 +389,6 @@ client.on('messageCreate', async (message) => {
                                 if (isImportantInsight) {
                                     stats.importantInsights++;
                                     rememberAiInsight(aiReply, transcript);
-                                    sendDmToOwner(`DM guidance:\n${aiReply.suggestion}`);
                                 }
 
                                 if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
@@ -407,8 +400,6 @@ client.on('messageCreate', async (message) => {
                                     console.log(`-> Event Evaluation [${currentEventData.activeEvent.title}]: ${status.toUpperCase()}`);
 
                                     if (status === 'resolved') {
-                                        sendDmToOwner(`🎉 Event Resolved: ${currentEventData.activeEvent.title}\nResolution: ${aiReply.resolutionSummary}`);
-                                        
                                         currentEventData.archivedEvents.push({
                                             title: currentEventData.activeEvent.title,
                                             resolution: aiReply.resolutionSummary,
@@ -422,16 +413,15 @@ client.on('messageCreate', async (message) => {
                                                 if (newEventObj && newEventObj.activeEvent) {
                                                     currentEventData.activeEvent = newEventObj.activeEvent;
                                                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                                    sendDmToOwner(`New Event Triggered: ${newEventObj.activeEvent.title}`);
                                                 }
                                             }).catch(err => console.error('-> Failed to generate new event:', err));
 
                                     } else if (status === 'escalated' || status === 'evolved') {
-                                        currentEventData.activeEvent.description = aiReply.updatedEventDescription || currentEventData.activeEvent.description;
-                                        currentEventData.activeEvent.complication = aiReply.updatedComplication || currentEventData.activeEvent.complication;
-                                        currentEventData.activeEvent.stakes = aiReply.updatedStakes || currentEventData.activeEvent.stakes;
+                                        currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
+                                        
                                         fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                        sendDmToOwner(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title}\nNew Twist: ${currentEventData.activeEvent.complication}`);
+                                        
+                                        console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${currentEventData.activeEvent.complication}`);
                                     }
                                 }
                                 

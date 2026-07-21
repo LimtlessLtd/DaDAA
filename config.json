@@ -3,6 +3,6 @@
   "OllamaConfig": {
     "enabled": true,
     "baseUrl": "http://localhost:11434",
-    "model": "neural-chat"
+    "model": "qwen3.5"
   }
 }
