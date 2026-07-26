@@ -9,7 +9,7 @@ def generate_tts(text, output_path, profile="narrator"):
     
     profile = profile.lower()
     
-    if profile == "narrator" or profile == "female":
+    if profile == "narrator":
         try:
             # gTTS produces much higher quality, natural-sounding audio
             # tld='co.uk' gives it a nice British narrator accent

@@ -16,13 +16,12 @@ Edit your `config.json` file and update the `OllamaConfig` section:
 
 ```json
 {
-  "foundryDataPath": "C:\\Users\\fab_f\\AppData\\Local\\FoundryVTT\\Data\\worlds\\ai-test-world\\data",
   "LLM": "gemini-3.5-flash",
   "LLMProvider": "cloud",
   "OllamaConfig": {
     "enabled": true,
     "baseUrl": "http://localhost:11434",
-    "model": "neural-chat"
+    "model": "Qwen3.5:latest"
   }
 }
 ```
