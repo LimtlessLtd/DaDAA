@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { getAllWorldData } = require('../data/data_manager');
+const { getAllWorldData, saveEntity } = require('../data/data_manager');
 
 const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const relationshipsPath = path.join(dataDir, 'relationships.json');
@@ -101,77 +101,109 @@ function callRagServer(apiPath, data) {
     });
 }
 
+// Everything goes into a single 'dnd_knowledge' collection (tagged with a "type" metadata
+// field for filtering, not split by category) because findRelevantRecords() only ever
+// queries 'dnd_knowledge' - splitting into per-category collections here previously meant
+// synced entities were written somewhere the retrieval path never looked, so they never
+// actually reached the DM's prompt no matter how much was synced.
 async function syncKnowledgeToRAG(worldData) {
     console.log('-> Syncing game data to RAG database...');
     worldDbCache.clear();
     exactNameCache.clear();
 
     const recordsForRag = [];
-    const collections = {
-        characters: 'dnd_characters',
-        locations: 'dnd_locations',
-        items: 'dnd_items',
-        quests: 'dnd_quests',
-        lore: 'dnd_lore',
-        encounters: 'dnd_encounters',
-        sessions: 'dnd_sessions'
-    };
 
     Object.entries(worldData).forEach(([category, items]) => {
         (items || []).forEach(record => {
             if (!record) return;
-            
+
             const id = record.id || `${category}_${Math.random().toString(36).substr(2, 9)}`;
             const name = record.name || record.title || id;
             const description = extractDescription(record);
             const enrichedRecord = { ...record, id, category, name, description };
-            
+
             worldDbCache.set(id, enrichedRecord);
             exactNameCache.set(normalizeText(name), id);
 
-            recordsForRag.push({ ...enrichedRecord, collection: collections[category] || 'dnd_knowledge' });
+            recordsForRag.push(enrichedRecord);
         });
-    });
-
-    const recordsByCollection = {};
-    recordsForRag.forEach(record => {
-        const collection = record.collection;
-        if (!recordsByCollection[collection]) {
-            recordsByCollection[collection] = [];
-        }
-        recordsByCollection[collection].push(record);
     });
 
     try {
         const BATCH_SIZE = 50;
-        for (const [collection, records] of Object.entries(recordsByCollection)) {
-            for (let i = 0; i < records.length; i += BATCH_SIZE) {
-                const batch = records.slice(i, i + BATCH_SIZE);
-                const documents = batch.map(r => {
-                    const doc = `${r.name}\n${r.description || ''}`;
-                    return typeof doc === 'string' ? doc : JSON.stringify(doc);
-                });
-                const metadatas = batch.map(r => ({ 
-                    source: 'game_data', 
-                    name: r.name, 
-                    type: r.category,
-                    entity_id: r.id
-                }));
-                const ids = batch.map(r => r.id);
-                
-                await callRagServer('/add', { 
-                    collection: collection, 
-                    documents: documents, 
-                    metadatas: metadatas, 
-                    ids: ids 
-                });
-            }
-            console.log(`-> Synced ${records.length} records to ${collection}`);
+        for (let i = 0; i < recordsForRag.length; i += BATCH_SIZE) {
+            const batch = recordsForRag.slice(i, i + BATCH_SIZE);
+            const documents = batch.map(r => `${r.name}\n${r.description || ''}`);
+            const metadatas = batch.map(r => ({
+                source: 'game_data',
+                name: r.name,
+                type: r.category,
+                entity_id: r.id
+            }));
+            const ids = batch.map(r => r.id);
+
+            await callRagServer('/add', {
+                collection: 'dnd_knowledge',
+                documents: documents,
+                metadatas: metadatas,
+                ids: ids
+            });
         }
         console.log(`-> Successfully synced ${recordsForRag.length} total records to RAG database.`);
     } catch (e) {
         console.warn('-> Failed to sync to RAG server:', e.message);
     }
+}
+
+// Persists a single DM-invented world element (new location, NPC, item, quest, lore, or
+// encounter) so it survives beyond the current session, and makes it immediately queryable
+// via findRelevantRecords() without waiting for a restart. Skips names already known (case-
+// insensitive) so the DM re-mentioning an established place doesn't create a duplicate entity.
+async function addWorldEntity(type, name, description, secret = false) {
+    const validTypes = ['npcs', 'locations', 'items', 'quests', 'lore', 'encounters'];
+    const cleanName = String(name || '').trim();
+    const cleanDescription = String(description || '').trim();
+    const isSecret = !!secret;
+
+    if (!validTypes.includes(type) || !cleanName || !cleanDescription) {
+        console.warn('-> Skipped malformed world entity:', JSON.stringify({ type, name, description }));
+        return null;
+    }
+
+    const normalized = normalizeText(cleanName);
+    if (exactNameCache.has(normalized)) {
+        return null; // already established - not a new invention, just a re-mention
+    }
+
+    const entity = saveEntity(type, { name: cleanName, description: cleanDescription, category: type, secret: isSecret });
+
+    worldDbCache.set(entity.id, entity);
+    exactNameCache.set(normalized, entity.id);
+
+    await callRagServer('/add', {
+        collection: 'dnd_knowledge',
+        documents: [`${cleanName}\n${cleanDescription}`],
+        metadatas: [{ source: 'dm_generated', name: cleanName, type, entity_id: entity.id, secret: isSecret }],
+        ids: [entity.id]
+    }).catch(() => {});
+
+    console.log(`-> DM invented new ${isSecret ? 'secret ' : ''}${type}: ${cleanName}`);
+    return entity;
+}
+
+async function addWorldEntities(entries) {
+    if (!entries || !Array.isArray(entries) || entries.length === 0) return;
+    for (const entry of entries) {
+        await addWorldEntity(entry?.type, entry?.name, entry?.description, entry?.secret);
+    }
+}
+
+// Clears the in-memory world cache without touching disk or RAG - used after an external
+// wipe (e.g. /api/start_campaign deleting temp_data/<type>/ files) so stale cached entities
+// don't cause false-positive dedup matches or get retrieved after they no longer exist on disk.
+function resetWorldCache() {
+    worldDbCache.clear();
+    exactNameCache.clear();
 }
 
 async function resolveRecordReference(input) {
@@ -439,4 +471,6 @@ module.exports = {
     stripHtml,
     extractDescription,
     callRagServer,
+    addWorldEntities,
+    resetWorldCache,
 };

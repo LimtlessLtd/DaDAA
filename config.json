@@ -4,5 +4,6 @@
     "enabled": true,
     "baseUrl": "http://localhost:11434",
     "model": "qwen3.5"
-  }
+  },
+  "DiceMaidenTag": "Dice Maiden#9678"
 }

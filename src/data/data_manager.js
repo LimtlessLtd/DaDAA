@@ -6,6 +6,7 @@ async function getAllWorldData() {
     
     const worldData = {
         characters: [],
+        npcs: [],
         locations: [],
         items: [],
         quests: [],
@@ -24,6 +25,7 @@ async function getAllWorldData() {
     
     const dataDirectories = [
         { dir: 'characters', key: 'characters' },
+        { dir: 'npcs', key: 'npcs' },
         { dir: 'locations', key: 'locations' },
         { dir: 'items', key: 'items' },
         { dir: 'quests', key: 'quests' },
@@ -79,7 +81,7 @@ async function getAllWorldData() {
 function saveEntity(entityType, entity) {
     const tempDataPath = path.join(__dirname, '..', '..', 'temp_data');
     
-    const validTypes = ['characters', 'locations', 'items', 'quests', 'lore', 'encounters', 'sessions'];
+    const validTypes = ['characters', 'npcs', 'locations', 'items', 'quests', 'lore', 'encounters', 'sessions'];
     if (!validTypes.includes(entityType)) {
         throw new Error(`Invalid entity type: ${entityType}`);
     }
@@ -116,18 +118,42 @@ function deleteEntity(entityType, entityId) {
 function getEntity(entityType, entityId) {
     const tempDataPath = path.join(__dirname, '..', '..', 'temp_data');
     const filePath = path.join(tempDataPath, entityType, `${entityId}.json`);
-    
+
     if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf8');
         return JSON.parse(content);
     }
-    
+
     return null;
 }
 
-module.exports = { 
-    getAllWorldData, 
-    saveEntity, 
-    deleteEntity, 
-    getEntity 
+// Deletes every stored entity file across all types - used when starting a fresh campaign,
+// so old NPCs/locations/lore don't linger alongside newly-generated ones.
+function clearAllEntities() {
+    const tempDataPath = path.join(__dirname, '..', '..', 'temp_data');
+    const validTypes = ['characters', 'npcs', 'locations', 'items', 'quests', 'lore', 'encounters', 'sessions'];
+    let cleared = 0;
+
+    for (const entityType of validTypes) {
+        const dirPath = path.join(tempDataPath, entityType);
+        if (!fs.existsSync(dirPath)) continue;
+
+        for (const file of fs.readdirSync(dirPath)) {
+            if (file.endsWith('.json')) {
+                fs.unlinkSync(path.join(dirPath, file));
+                cleared++;
+            }
+        }
+    }
+
+    console.log(`-> Cleared ${cleared} world entity files`);
+    return cleared;
+}
+
+module.exports = {
+    getAllWorldData,
+    saveEntity,
+    deleteEntity,
+    getEntity,
+    clearAllEntities
 };

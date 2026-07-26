@@ -130,6 +130,37 @@
       resize: vertical;
       min-height: 80px;
     }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid #334155;
+    }
+    .tab-button {
+      background: transparent;
+      color: #94a3b8;
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 6px 6px 0 0;
+      padding: 10px 16px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .tab-button:hover {
+      background: #1e293b;
+      color: #f1f5f9;
+    }
+    .tab-button.active {
+      color: #3b82f6;
+      border-bottom-color: #3b82f6;
+      background: #1e293b;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -137,167 +168,197 @@
     <header>
       <h1>DaDAA Dashboard</h1>
       <div style="display: flex; align-items: center; gap: 8px;">
-        <button id="debugToggleBtn" style="background: #475569; font-size: 0.75rem; padding: 4px 8px;">Show Debug Mode</button>
         <button onclick="fetch('/api/shutdown', {method: 'POST'})" style="background: #b91c1c; padding: 4px 8px; font-size: 0.75rem;">Kill servers & services</button>
         <div id="status" class="status-badge">Status: Ready</div>
       </div>
     </header>
 
-    <div class="grid">
-      <!-- Left Column: Insights / Memory -->
-      <div class="panel" style="width: 550px; overflow-wrap: anywhere;">
-        <div class="panel-title">
-          Recent AI Insights
-          <button id="insightsFilterBtn" style="padding: 4px 8px; font-size: 0.75rem;">Show 5 Recent</button>
-        </div>
-        <div id="memory"></div>
-      </div>
-
-      <!-- Right Column: Transcripts -->
-      <div class="panel">
-        <div class="panel-title">
-          Transcript History
-          <button id="transcriptToggleBtn">Show full transcript</button>
-        </div>
-        <div id="triggerBanner"></div>
-        <div id="transcriptLog"></div>
-      </div>
+    <div class="tabs">
+      <button class="tab-button active" data-tab="world">World Setting</button>
+      <button class="tab-button" data-tab="dashboard">Dashboard</button>
+      <button class="tab-button" data-tab="debug">Debug &amp; RAG</button>
     </div>
 
-    <!-- Management Row -->
-    <div class="grid-3">
-      <!-- Session Planning -->
+    <!-- World Setting Tab -->
+    <div id="tab-world" class="tab-content active">
       <div class="panel">
-        <div class="panel-title">Current Event</div>
-        <div class="input-group">
-          <div style="display: flex; gap: 8px;">
-            <button id="startCampaignBtn" style="background: #10b981; flex: 1;">Start New Campaign</button>
-            <button id="generateEventBtn" style="flex: 1;">Generate new event</button>
-          </div>
-          <div id="currentEventDisplay" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
-             <!-- Event injected here -->
-             No active event.
-          </div>
-          <div style="margin-top: 10px; font-size: 0.75rem; color: #64748b; font-weight: bold;">Archived Events</div>
-          <div id="archivedEventsDisplay" style="background: #0f172a; padding: 8px; border-radius: 6px; border: 1px solid #334155; font-size: 0.75rem; color: #94a3b8; margin-top: 4px; max-height: 100px; overflow-y: auto;">
-             <!-- Archived events injected here -->
-             No archived events.
-          </div>
+        <div class="panel-title">World Setting</div>
+        <div id="campaignIntroDisplay" style="color: #cbd5e1; font-size: 0.85rem; line-height: 1.5; max-height: 220px; overflow-y: auto;">
+          No campaign has been generated yet. Click "Start New Campaign" to begin.
         </div>
       </div>
 
-      <!-- Character Mapping -->
-      <div class="panel">
-        <div class="panel-title">Character Mapping</div>
-        <div class="input-group">
-          <select id="discordUserInput">
-            <option value="">Select Discord User</option>
+      <div class="panel" style="margin-top: 16px;">
+        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+          World Entities
+          <select id="worldEntityFilter" style="width: 160px; font-size: 0.75rem; padding: 4px 8px;">
+            <option value="">All Types</option>
+            <option value="npcs">NPCs</option>
+            <option value="locations">Locations</option>
+            <option value="items">Items</option>
+            <option value="quests">Quests</option>
+            <option value="lore">Lore</option>
+            <option value="encounters">Encounters</option>
           </select>
-          <select id="characterNameInput">
-            <option value="">Select Foundry Actor</option>
-          </select>
-          <button id="bindCharacterBtn">Bind Character</button>
         </div>
-        <div id="characterMapList" style="margin-top: 12px; max-height: 150px; overflow-y: auto;"></div>
+        <div id="worldEntitiesList" style="max-height: 320px; overflow-y: auto;">
+          No world entities recorded yet.
+        </div>
+      </div>
+    </div>
+
+    <!-- Dashboard Tab -->
+    <div id="tab-dashboard" class="tab-content">
+      <div class="grid">
+        <!-- Left Column: Insights / Memory -->
+        <div class="panel" style="width: 550px; overflow-wrap: anywhere;">
+          <div class="panel-title">
+            Recent AI Insights
+            <button id="insightsFilterBtn" style="padding: 4px 8px; font-size: 0.75rem;">Show 5 Recent</button>
+          </div>
+          <div id="memory"></div>
+        </div>
+
+        <!-- Right Column: Transcripts -->
+        <div class="panel">
+          <div class="panel-title">
+            Transcript History
+            <button id="transcriptToggleBtn">Show full transcript</button>
+          </div>
+          <div id="triggerBanner"></div>
+          <div id="transcriptLog"></div>
+        </div>
       </div>
 
-      <!-- Character Logs -->
+      <!-- Management Row -->
+      <div class="grid-3">
+        <!-- Session Planning -->
+        <div class="panel">
+          <div class="panel-title">Current Event</div>
+          <div class="input-group">
+            <div style="display: flex; gap: 8px;">
+              <button id="startCampaignBtn" style="background: #10b981; flex: 1;">Start New Campaign</button>
+              <button id="generateEventBtn" style="flex: 1;">Generate new event</button>
+            </div>
+            <div id="currentEventDisplay" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
+               <!-- Event injected here -->
+               No active event.
+            </div>
+            <div style="margin-top: 10px; font-size: 0.75rem; color: #64748b; font-weight: bold;">Archived Events</div>
+            <div id="archivedEventsDisplay" style="background: #0f172a; padding: 8px; border-radius: 6px; border: 1px solid #334155; font-size: 0.75rem; color: #94a3b8; margin-top: 4px; max-height: 100px; overflow-y: auto;">
+               <!-- Archived events injected here -->
+               No archived events.
+            </div>
+          </div>
+        </div>
+
+        <!-- Character Mapping -->
+        <div class="panel">
+          <div class="panel-title">Character Mapping</div>
+          <div class="input-group">
+            <select id="discordUserInput">
+              <option value="">Select Discord User</option>
+            </select>
+            <select id="characterNameInput">
+              <option value="">Select Character</option>
+            </select>
+            <button id="bindCharacterBtn">Bind Character</button>
+          </div>
+          <div id="characterMapList" style="margin-top: 12px; max-height: 150px; overflow-y: auto;"></div>
+        </div>
+
+        <!-- Character Logs -->
+        <div class="panel">
+          <div class="panel-title">Character Logs</div>
+          <div id="characterLogsList" style="max-height: 200px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Debug & RAG Tab -->
+    <div id="tab-debug" class="tab-content">
+      <!-- RAG Vector Search Tester -->
       <div class="panel">
-        <div class="panel-title">Character Logs</div>
-        <div id="characterLogsList" style="max-height: 200px; overflow-y: auto;"></div>
-      </div>
-    </div>
-
-    <!-- RAG Vector Search Tester -->
-    <div class="panel" style="margin-top: 16px;">
-      <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
-        <div style="display: flex; gap: 8px; align-items: center;">
-          Knowledge Base (Vector Search)
-          <span class="status-badge" style="background: #064e3b; color: #34d399; border-color: #047857;">ChromaDB Connected</span>
+        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; gap: 8px; align-items: center;">
+            Knowledge Base (Vector Search)
+            <span class="status-badge" style="background: #064e3b; color: #34d399; border-color: #047857;">ChromaDB Connected</span>
+          </div>
+          <button id="clearRagBtn" style="background: #b91c1c; padding: 4px 8px; font-size: 0.75rem;">Wipe Database</button>
         </div>
-        <button id="clearRagBtn" style="background: #b91c1c; padding: 4px 8px; font-size: 0.75rem;">Wipe Database</button>
-      </div>
-      <div class="panel-title">
-        Knowledge Base (Vector Search)
-        <span class="status-badge" style="background: #064e3b; color: #34d399; border-color: #047857;">ChromaDB Connected</span>
-      </div>
-      <div class="input-group" style="flex-direction: row; align-items: center;">
-        <input type="text" id="ragSearchInput" placeholder="Search the AI DM's brain..." style="flex: 1;" />
-                <select id="ragCollectionSelect" style="width: 200px;">
-                  <option value="dnd_characters">Characters</option>
-                  <option value="dnd_locations">Locations</option>
-                  <option value="dnd_items">Items</option>
-                  <option value="dnd_quests">Quests</option>
-                  <option value="dnd_lore">Lore</option>
-                  <option value="dnd_encounters">Encounters</option>
-                  <option value="dnd_sessions">Sessions</option>
-                  <option value="dnd_transcripts">Transcripts</option>
-                </select>
-        <button id="ragSearchBtn" style="white-space: nowrap;">Query Vectors</button>
-      </div>
-      <div id="ragSearchResults" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
-        Enter a query to test semantic retrieval...
-      </div>
-    </div>
-
-    <!-- Debug & Cognitive Telemetry Console -->
-    <div id="debugPanel" class="panel" style="margin-top: 16px; display: none;">
-      <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; margin-bottom: 12px; padding-bottom: 6px;">
-        <span style="color: #cbd5e1; font-weight: bold; font-size: 0.85rem; text-transform: uppercase;">LLM Cognitive Telemetry & Debug Console</span>
-        <span style="font-size: 0.75rem; text-transform: none; color: #64748b;" id="debugLastUpdated">Never updated</span>
-      </div>
-      
-            <!-- Telemetry Cards -->
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px;">
-        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
-          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">LLM Provider Status</div>
-          <div style="font-size: 0.95rem; font-weight: 700; color: #10b981; margin-top: 4px;" id="telemetryProviderStatus">-</div>
+        <div class="input-group" style="flex-direction: row; align-items: center;">
+          <input type="text" id="ragSearchInput" placeholder="Search the AI DM's brain..." style="flex: 1;" />
+          <select id="ragCollectionSelect" style="width: 200px;">
+            <option value="dnd_knowledge">World Knowledge</option>
+            <option value="dnd_transcripts">Transcripts</option>
+            <option value="dnd_insights">Insights</option>
+          </select>
+          <button id="ragSearchBtn" style="white-space: nowrap;">Query Vectors</button>
         </div>
-        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
-          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Active Model</div>
-          <div style="font-size: 0.95rem; font-weight: 700; color: #3b82f6; margin-top: 4px;" id="telemetryModel">-</div>
-        </div>
-        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
-          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Last API Latency</div>
-          <div style="font-size: 0.95rem; font-weight: 700; color: #10b981; margin-top: 4px;" id="telemetryLatency">-</div>
-        </div>
-        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
-          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Spoken Utterances</div>
-          <div style="font-size: 0.95rem; font-weight: 700; color: #f59e0b; margin-top: 4px;" id="telemetryUtterances">-</div>
-        </div>
-        <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
-          <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">LLM Queries / Insights</div>
-          <div style="font-size: 0.95rem; font-weight: 700; color: #8b5cf6; margin-top: 4px;" id="telemetryQueries">-</div>
+        <div id="ragSearchResults" style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; font-size: 0.8rem; color: #cbd5e1; margin-top: 8px; max-height: 250px; overflow-y: auto;">
+          Enter a query to test semantic retrieval...
         </div>
       </div>
 
-      <!-- Cognitive Breakdown -->
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 16px;">
-        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155;">
-          <strong style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Last Evaluated Transcript</strong>
-          <div style="font-size: 0.8rem; color: #f8fafc; font-style: italic; line-height: 1.4;" id="debugTranscript">None evaluated yet</div>
+      <!-- Debug & Cognitive Telemetry Console -->
+      <div id="debugPanel" class="panel" style="margin-top: 16px;">
+        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; margin-bottom: 12px; padding-bottom: 6px;">
+          <span style="color: #cbd5e1; font-weight: bold; font-size: 0.85rem; text-transform: uppercase;">LLM Cognitive Telemetry & Debug Console</span>
+          <span style="font-size: 0.75rem; text-transform: none; color: #64748b;" id="debugLastUpdated">Never updated</span>
         </div>
-        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155;">
-          <strong style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Evaluated Decision Reasons</strong>
-          <div style="font-size: 0.8rem; color: #fef3c7; line-height: 1.4;" id="debugReason">No evaluations yet</div>
+
+        <!-- Telemetry Cards -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px;">
+          <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+            <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">LLM Provider Status</div>
+            <div style="font-size: 0.95rem; font-weight: 700; color: #10b981; margin-top: 4px;" id="telemetryProviderStatus">-</div>
+          </div>
+          <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+            <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Active Model</div>
+            <div style="font-size: 0.95rem; font-weight: 700; color: #3b82f6; margin-top: 4px;" id="telemetryModel">-</div>
+          </div>
+          <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+            <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Last API Latency</div>
+            <div style="font-size: 0.95rem; font-weight: 700; color: #10b981; margin-top: 4px;" id="telemetryLatency">-</div>
+          </div>
+          <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+            <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">Spoken Utterances</div>
+            <div style="font-size: 0.95rem; font-weight: 700; color: #f59e0b; margin-top: 4px;" id="telemetryUtterances">-</div>
+          </div>
+          <div style="background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155;">
+            <div style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">LLM Queries / Insights</div>
+            <div style="font-size: 0.95rem; font-weight: 700; color: #8b5cf6; margin-top: 4px;" id="telemetryQueries">-</div>
+          </div>
         </div>
-      </div>
 
-      <!-- Collapsable raw prompts and responses -->
-      <div style="margin-bottom: 8px;">
-        <button class="debug-collapse-btn" onclick="toggleDebugAccordion('debugPromptSection')" style="background: #334155; width: 100%; text-align: left; display: flex; justify-content: space-between; border-radius: 6px; padding: 8px 12px; font-size: 0.8rem; border: none; font-weight: 600; color: #cbd5e1;">
-          <span>Show Full Context &amp; Injected Prompt</span>
-          <span id="debugPromptSectionIcon">▼</span>
-        </button>
-        <pre id="debugPromptSection" style="display: none; background: #0f172a; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; margin-top: 8px; color: #94a3b8; max-height: 250px; overflow-y: auto;"></pre>
-      </div>
+        <!-- Cognitive Breakdown -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 16px;">
+          <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155;">
+            <strong style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Last Evaluated Transcript</strong>
+            <div style="font-size: 0.8rem; color: #f8fafc; font-style: italic; line-height: 1.4;" id="debugTranscript">None evaluated yet</div>
+          </div>
+          <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155;">
+            <strong style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Evaluated Decision Reasons</strong>
+            <div style="font-size: 0.8rem; color: #fef3c7; line-height: 1.4;" id="debugReason">No evaluations yet</div>
+          </div>
+        </div>
 
-      <div>
-        <button class="debug-collapse-btn" onclick="toggleDebugAccordion('debugResponseSection')" style="background: #334155; width: 100%; text-align: left; display: flex; justify-content: space-between; border-radius: 6px; padding: 8px 12px; font-size: 0.8rem; border: none; font-weight: 600; color: #cbd5e1;">
-          <span>Show Raw Structured LLM Response</span>
-          <span id="debugResponseSectionIcon">▼</span>
-        </button>
-        <pre id="debugResponseSection" style="display: none; background: #0f172a; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; margin-top: 8px; color: #10b981; max-height: 200px; overflow-y: auto;"></pre>
+        <!-- Collapsable raw prompts and responses -->
+        <div style="margin-bottom: 8px;">
+          <button class="debug-collapse-btn" onclick="toggleDebugAccordion('debugPromptSection')" style="background: #334155; width: 100%; text-align: left; display: flex; justify-content: space-between; border-radius: 6px; padding: 8px 12px; font-size: 0.8rem; border: none; font-weight: 600; color: #cbd5e1;">
+            <span>Show Full Context &amp; Injected Prompt</span>
+            <span id="debugPromptSectionIcon">▼</span>
+          </button>
+          <pre id="debugPromptSection" style="display: none; background: #0f172a; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; margin-top: 8px; color: #94a3b8; max-height: 250px; overflow-y: auto;"></pre>
+        </div>
+
+        <div>
+          <button class="debug-collapse-btn" onclick="toggleDebugAccordion('debugResponseSection')" style="background: #334155; width: 100%; text-align: left; display: flex; justify-content: space-between; border-radius: 6px; padding: 8px 12px; font-size: 0.8rem; border: none; font-weight: 600; color: #cbd5e1;">
+            <span>Show Raw Structured LLM Response</span>
+            <span id="debugResponseSectionIcon">▼</span>
+          </button>
+          <pre id="debugResponseSection" style="display: none; background: #0f172a; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; margin-top: 8px; color: #10b981; max-height: 200px; overflow-y: auto;"></pre>
+        </div>
       </div>
     </div>
   </div>
@@ -307,6 +368,7 @@
     const speakerColorMap = {};
     let transcriptFullView = false;
     const transcriptPreviewLines = 5;
+    const expandedTranscriptItems = new Set();
     let insightsFilterActive = true;
     const insightsPreviewCount = 3;
 
@@ -459,6 +521,61 @@
       } catch (e) {
         console.warn('Failed to load session state', e);
       }
+    }
+
+    async function loadCampaignIntro() {
+      try {
+        const res = await fetch('/api/campaign_intro');
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('campaignIntroDisplay');
+        if (!data || !data.text) {
+          container.innerHTML = 'No campaign has been generated yet. Click "Start New Campaign" to begin.';
+          return;
+        }
+        const paragraphs = String(data.text).split(/\n+/).filter(Boolean);
+        container.innerHTML = paragraphs.map(p => `<p style="margin: 0 0 8px 0;">${escapeHtml(p)}</p>`).join('');
+      } catch (e) {
+        console.warn('Failed to load campaign intro', e);
+      }
+    }
+
+    let worldEntitiesCache = [];
+
+    async function loadWorldEntities() {
+      try {
+        const res = await fetch('/api/world_entities');
+        if (!res.ok) return;
+        worldEntitiesCache = await res.json();
+        renderWorldEntities();
+      } catch (e) {
+        console.warn('Failed to load world entities', e);
+      }
+    }
+
+    function renderWorldEntities() {
+      const container = document.getElementById('worldEntitiesList');
+      const filterEl = document.getElementById('worldEntityFilter');
+      const filter = filterEl ? filterEl.value : '';
+      const entities = filter ? worldEntitiesCache.filter((e) => e.type === filter) : worldEntitiesCache;
+
+      if (!entities.length) {
+        container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem; padding: 4px;">No world entities recorded yet.</div>';
+        return;
+      }
+
+      container.innerHTML = entities.map((e) => `
+        <div class="item">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="text-transform: uppercase; color: #f59e0b; font-weight: bold; font-size: 0.7rem;">${escapeHtml(e.type)}</span>
+            ${e.secret ? '<span class="status-badge" style="background: #7f1d1d; color: #fca5a5; border-color: #991b1b; font-size: 0.65rem;">SECRET</span>' : ''}
+          </div>
+          <div style="margin-top: 4px;">
+            <strong style="color: #3b82f6;">${escapeHtml(e.name)}</strong>
+            <div style="color: #cbd5e1; font-size: 0.8rem; margin-top: 2px;">${escapeHtml(e.description)}</div>
+          </div>
+        </div>
+      `).join('');
     }
 
     async function loadCharacterLogs() {
@@ -629,26 +746,37 @@
         const fullText = String(transcriptText || '');
         const shortText = fullText.length > 150 ? fullText.slice(0, 150) + '…' : fullText;
         const initials = getInitials(source);
+        // Line content itself is the expand/collapse key, so state survives the 3s
+        // auto-refresh re-rendering this whole list from scratch.
+        const isExpanded = expandedTranscriptItems.has(line);
+        const displayText = isExpanded ? fullText : shortText;
 
         return `
-          <div class="item transcript-item" data-full="${escapeHtml(fullText)}" data-short="${escapeHtml(shortText)}" style="border-left: 3px solid ${color}; display: flex; gap: 10px; align-items: flex-start; cursor: pointer;">
+          <div class="item transcript-item" data-key="${escapeHtml(line)}" data-full="${escapeHtml(fullText)}" data-short="${escapeHtml(shortText)}" style="border-left: 3px solid ${color}; display: flex; gap: 10px; align-items: flex-start; cursor: pointer;">
             <div style="width: 32px; flex: none; display: flex; align-items: center; justify-content: center; background: ${color}; border-radius: 50%; height: 32px; font-weight: 700; font-size: 0.75rem; color: #fff;">${escapeHtml(initials)}</div>
             <div style="flex: 1; min-width: 0;">
               <div style="display: flex; justify-content: space-between; align-items: center;">
                 <strong style="font-size: 0.85rem; color: #e2e8f0;">${escapeHtml(source)}</strong>
                 <span style="color: #64748b; font-size: 0.7rem;">${escapeHtml(timestamp)}</span>
               </div>
-              <div class="transcript-text" style="margin-top: 4px; color: #cbd5e1; line-height: 1.4;">${escapeHtml(shortText)}</div>
+              <div class="transcript-text" style="margin-top: 4px; color: #cbd5e1; line-height: 1.4;">${escapeHtml(displayText)}</div>
             </div>
           </div>`;
       }).join('');
 
       container.querySelectorAll('.transcript-item').forEach(item => {
         item.addEventListener('click', () => {
+          const key = item.getAttribute('data-key');
           const full = item.getAttribute('data-full');
           const short = item.getAttribute('data-short');
           const txtDiv = item.querySelector('.transcript-text');
-          txtDiv.innerText = txtDiv.innerText === short ? full : short;
+          if (expandedTranscriptItems.has(key)) {
+            expandedTranscriptItems.delete(key);
+            txtDiv.innerText = short;
+          } else {
+            expandedTranscriptItems.add(key);
+            txtDiv.innerText = full;
+          }
         });
       });
     }
@@ -752,11 +880,12 @@
 
       const btn = document.getElementById('startCampaignBtn');
       btn.disabled = true;
-      btn.textContent = 'Starting Session Zero...';
+      btn.textContent = 'Generating campaign...';
       try {
         const res = await fetch('/api/start_campaign', { method: 'POST' });
-        if (!res.ok) throw new Error('Failed to initialize new campaign');
-        alert("Campaign initialized successfully.");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed to initialize new campaign');
+        alert(data.message || "Campaign initialized successfully.");
       } catch (err) {
         alert(err.message);
       } finally {
@@ -765,11 +894,27 @@
       }
     });
 
-    // --- LLM Telemetry & Debug Mode ---
-    let debugModeActive = false;
+    // --- Tab Switching ---
+    let currentTab = 'world';
 
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.tab-button').forEach((btn) => {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
+      });
+      document.querySelectorAll('.tab-content').forEach((el) => {
+        el.classList.toggle('active', el.id === 'tab-' + tab);
+      });
+      if (tab === 'debug') loadDebugData();
+    }
+
+    document.querySelectorAll('.tab-button').forEach((btn) => {
+      btn.addEventListener('click', () => switchTab(btn.getAttribute('data-tab')));
+    });
+
+    // --- LLM Telemetry & Debug Mode ---
         async function loadDebugData() {
-      if (!debugModeActive) return;
+      if (currentTab !== 'debug') return;
       try {
         const debug = await fetch('/temp_data/llm_debug.json').then((r) => r.json());
         if (debug) {
@@ -811,22 +956,6 @@
       }
     }
 
-    function toggleDebugMode() {
-      debugModeActive = !debugModeActive;
-      const debugPanel = document.getElementById('debugPanel');
-      const btn = document.getElementById('debugToggleBtn');
-      if (debugModeActive) {
-        debugPanel.style.display = 'block';
-        btn.innerText = 'Hide Debug Mode';
-        btn.style.background = '#ef4444';
-        loadDebugData();
-      } else {
-        debugPanel.style.display = 'none';
-        btn.innerText = 'Show Debug Mode';
-        btn.style.background = '#475569';
-      }
-    }
-
     function toggleDebugAccordion(id) {
       const el = document.getElementById(id);
       const icon = document.getElementById(id + 'Icon');
@@ -839,21 +968,25 @@
       }
     }
 
-    document.getElementById('debugToggleBtn').addEventListener('click', toggleDebugMode);
-
         setInterval(() => {
       console.log(`-> Auto-refreshing dashboard at ${new Date().toLocaleTimeString()}`); // Debug log
       loadData();
-      if (debugModeActive) loadDebugData();
+      if (currentTab === 'debug') loadDebugData();
     }, 3000);
     setInterval(loadCharacterLogs, 5000);
     setInterval(populateDropdowns, 10000);
-    
+    setInterval(loadCampaignIntro, 5000);
+    setInterval(loadWorldEntities, 5000);
+
+    document.getElementById('worldEntityFilter').addEventListener('change', renderWorldEntities);
+
     loadData();
     loadCharacterMap();
     loadSessionStateData();
     loadCharacterLogs();
     populateDropdowns();
+    loadCampaignIntro();
+    loadWorldEntities();
   </script>
 </body>
 </html>

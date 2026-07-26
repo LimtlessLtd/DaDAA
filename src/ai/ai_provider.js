@@ -17,7 +17,11 @@ Respond ONLY with a valid JSON object:
     "isImportant": true/false,
     "isOOC": true/false,
     "resolutionSummary": "How the event has changed, evolved, escalated, or been resolved.",
-    "characterLogs": []
+    "characterLogs": [ { "character": "Exact character name from the Discord User to Character Map", "log": "A brief, specific description of what happened and why it matters for this character", "type": "plot | trauma | npc | development" } ],
+    "worldEntities": [ { "type": "npcs | locations | items | quests | lore | encounters", "name": "The proper name you just invented", "description": "Everything worth remembering about it - appearance, personality, purpose, secrets, relationships - written so it can be read back to you later as ground truth", "secret": true/false } ],
+    "checkCharacter": "Exact character name (from the Discord User to Character Map) being asked to roll, or null if no roll is being requested.",
+    "checkSkill": "The skill or ability being tested or null if no check required.",
+    "checkDc": "The Difficulty Class as an integer (typically 5-30), or null if no check required."
 }
 
 GUIDELINES:
@@ -32,15 +36,19 @@ GUIDELINES:
    - A player attempts an impossible or game-breaking action requiring firm denial.
    - The transcript says "(Players are silent and awaiting the Dungeon Master's lead)" - you MUST progress the scene.
    Otherwise, set to false.
-5. In-Character Speech: If isImportant is true and you require a skill check or hint, weave it into "spokenNarrative" (e.g., "The dust is undisturbed... perhaps an Investigation check would reveal more.").
-6. Voice Profiles: Always specify "voiceProfile" if "spokenNarrative" is provided.
-7. Character Logs: Log major character developments, traumas, or plot events for specific player characters in "characterLogs". Leave empty [] if nothing major occurred. Use the Discord User to Character Map.
-8. Current Event Tracking: Evaluate the immediate obstacle. Do not look for binary checklists; assess creative problem-solving. Return an "eventStatus":
+5. In-Character Speech: If isImportant is true and you require a skill check or hint, weave it into "spokenNarrative" (e.g., "The dust is undisturbed... make a DC 15 Investigation check to spot anything unusual.").
+6. Requesting a Roll: Whenever "spokenNarrative" asks a player to make a skill check, you MUST (a) state the skill and the numeric DC out loud in "spokenNarrative" itself, so the player knows what they're rolling and what they need to beat, and (b) fill in "checkCharacter" (exact name from the Discord User to Character Map), "checkSkill", and "checkDc" so the request can be tracked and matched against their dice roll. Never request a check without announcing its DC. Leave all three null if no roll is being requested this turn. Only one roll can be pending per character at a time - a new request for the same character replaces any earlier one.
+7. Reacting to Roll Results: If the Live Transcript starts with "[Dice Roll Result]", it is the resolved outcome of a check you previously requested - not table talk. You MUST set "isImportant" to true and "isOOC" to false, and "spokenNarrative" MUST narrate a concrete, specific consequence of that exact result, never a vague acknowledgement like "the roll happens" or silence. On FAILURE: something real and negative happens now - a setback, a complication, harm, a lost opportunity, or a firm "no" with a cost. Do not let a failed roll pass without effect. On SUCCESS: describe the concrete benefit or information gained. If the result says "CRITICAL SUCCESS": go beyond the normal success - an exceptional, unexpectedly favorable outcome (extra information, a bonus advantage, no downside). If the result says "CRITICAL FAILURE": go beyond a normal failure - something goes wrong in a bigger or more dramatic/embarrassing way than the check alone would warrant (a fumble with real consequences, not just "you fail"). Do not request a new check in the same reply unless the fiction clearly demands one.
+8. Brevity: "spokenNarrative" must be 1-3 sentences. Be cinematic and specific, not a lecture - state what happens and stop. Never re-explain context the players already have, never summarize the scene so far, never monologue.
+9. Voice Profiles: Always specify "voiceProfile" if "spokenNarrative" is provided.
+10. Character Logs: Log major character developments, traumas, notable NPC encounters, or plot events for specific player characters in "characterLogs". Each entry MUST be an object with exactly these fields: "character" (exact name from the Discord User to Character Map), "log" (a brief, specific description of what happened and why it matters - never empty), and "type" (one of "plot", "trauma", "npc", "development"). Leave the array empty [] if nothing worth remembering occurred. Never emit an entry with a missing or empty "character" or "log".
+11. Inventing the World: There is no pre-written setting beyond what Session Zero and prior play have established - you invent everything else as the players explore. Whenever you introduce a significant NEW named NPC, location, item, quest, or piece of lore for the first time, record it in "worldEntities" so it is remembered in future sessions instead of being forgotten or contradicted later. Before inventing something, check the World Context and Records below - if it already exists, use it as-is and do NOT re-record it. Write "description" as the actual reference fact (not a narration of this moment) - it is what future-you will read to stay consistent, so include anything a consistent DM would need to know later (appearance, motives, secrets, relationships to other established people/places). Set "secret" to true for anything the players have not learned yet (a hidden motive, an undiscovered place, a truth you're saving for a twist) and false for anything already public knowledge in the fiction. Leave "worldEntities" empty [] when nothing new was introduced. If a Record below is marked "[SECRET]", it is background knowledge for your consistency only - use it to inform NPC behavior and foreshadowing, but NEVER state it directly to players; only let it surface through play (investigation, a dramatic reveal, a plot twist) when it is earned.
+12. Current Event Tracking: Evaluate the immediate obstacle. Do not look for binary checklists; assess creative problem-solving. Return an "eventStatus":
    - "resolved": Threat/problem is neutralized.
    - "escalated": Players ignored it, failed, or worsened it (update complication).
    - "evolved": Players altered the situation creatively; parameters changed.
    - "stable": Situation continues as-is.
-9. Enforcing Boundaries: You dictate reality. Deny physically impossible or immersion-breaking actions. Explain the refusal clearly in "spokenNarrative", or use "No, but..." to offer a realistic alternative.
+13. Enforcing Boundaries: You dictate reality. Deny physically impossible or immersion-breaking actions. Explain the refusal clearly in "spokenNarrative", or use "No, but..." to offer a realistic alternative.
 
 Current Event:
 ${currentEventString || 'No active event.'}
@@ -79,7 +87,9 @@ async function callModel(prompt) {
     return normaliseJson(botResponse);
 }
 
-function fallbackToCloudProviders(prompt) {
+// Shared by every "which cloud provider should handle this call" decision (main DM turn,
+// event generation, campaign seed generation) - previously duplicated near-verbatim in each.
+function selectCloudProvider() {
     const keys = {
         gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
         anthropic: process.env.ANTHROPIC_API_KEY,
@@ -100,7 +110,7 @@ function fallbackToCloudProviders(prompt) {
         provider = 'openai';
         apiKey = keys.openai;
     }
-    
+
     if (!provider || !apiKey) {
         if (keys.gemini) {
             provider = 'gemini';
@@ -114,26 +124,25 @@ function fallbackToCloudProviders(prompt) {
         }
     }
 
-    if (!provider || !apiKey) {
+    return provider && apiKey ? { provider, apiKey } : null;
+}
+
+function callCloudProvider(provider, apiKey, prompt) {
+    if (provider === 'gemini') return callGemini(apiKey, prompt);
+    if (provider === 'anthropic') return callAnthropic(apiKey, prompt);
+    return callOpenAI(apiKey, prompt);
+}
+
+function fallbackToCloudProviders(prompt) {
+    const selected = selectCloudProvider();
+    if (!selected) {
         console.warn('-> AI Provider: No valid cloud API keys found in .env (tried Gemini -> Anthropic -> OpenAI)');
         return Promise.resolve(null);
     }
 
-    console.log(`-> Using ${provider} as LLM provider`);
-    
-    if (provider === 'gemini') {
-        return callGemini(apiKey, prompt).then(text => {
-            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
-        });
-    }
+    console.log(`-> Using ${selected.provider} as LLM provider`);
 
-    if (provider === 'anthropic') {
-        return callAnthropic(apiKey, prompt).then(text => {
-            try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
-        });
-    }
-
-    return callOpenAI(apiKey, prompt).then(text => {
+    return callCloudProvider(selected.provider, selected.apiKey, prompt).then(text => {
         try { return JSON.parse(text); } catch(e) { return { suggestion: text, isImportant: true, eventStatus: "stable" }; }
     });
 }
@@ -146,7 +155,8 @@ function callOllama(prompt) {
         model: model,
         prompt: prompt,
         stream: false,
-        format: "json"
+        format: "json",
+        think: false // Qwen3.x and other reasoning models otherwise route the whole JSON reply into "thinking" and leave "response" empty
     });
 
     return requestOllama(baseUrl, body).then(text => {
@@ -268,7 +278,10 @@ function requestOllama(baseUrl, body) {
                         reject(new Error(`Ollama API Error (HTTP ${res.statusCode}): ${data}`));
                     } else {
                         const response = JSON.parse(data);
-                        resolve(response.response || data);
+                        // Reasoning models may still emit the answer in "thinking" instead of
+                        // "response" even with think:false requested - fall back to that before
+                        // ever falling back to the raw HTTP payload (which is not the model's reply).
+                        resolve(response.response || response.thinking || data);
                     }
                 } catch (error) {
                     if (res.statusCode && res.statusCode >= 400) {
@@ -346,7 +359,7 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
     if (config.OllamaConfig?.enabled) {
         return callOllama(prompt).then(res => {
             try {
-                return (typeof res === 'object') ? res : JSON.parse(res);
+                return parseJsonLoose(res);
             } catch(e) {
                 console.warn('-> Ollama response parsing failed, falling back to cloud providers:', e.message);
                 return fallbackToCloudProvidersForEvents(prompt);
@@ -356,70 +369,91 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
             return fallbackToCloudProvidersForEvents(prompt);
         });
     }
-    
+
     return fallbackToCloudProvidersForEvents(prompt);
 }
 
-function fallbackToCloudProvidersForEvents(prompt) {
-    const keys = {
-        gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
-        anthropic: process.env.ANTHROPIC_API_KEY,
-        openai: process.env.OPENAI_API_KEY
-    };
+// One-shot "invent a whole campaign starting point" call - triggered when players finish
+// describing their Session Zero ideas (see index.js handleSessionZeroInput). Not part of the
+// regular per-turn DM pipeline. Returns { introLore, worldEntities } or null.
+function generateCampaignSeed(playerIdeas = '') {
+    const ideasSection = playerIdeas && playerIdeas.trim()
+        ? `The players described these ideas for the setting - honor them as the foundation of what you invent:\n"""\n${playerIdeas.trim()}\n"""`
+        : 'The players did not give any specific ideas - invent freely, staying broadly appropriate for a fantasy tabletop RPG.';
 
-    const modelName = String(config.LLM || '').toLowerCase();
-    let provider = null;
-    let apiKey = null;
+    const prompt = `You are a creative fantasy Dungeon Master turning the players' Session Zero ideas into the actual starting point of a brand new campaign. Do not reuse a well-known published D&D setting, novel, or other IP.
 
-    if ((modelName.includes('gemini') || !modelName || modelName.includes('flash')) && keys.gemini) {
-        provider = 'gemini';
-        apiKey = keys.gemini;
-    } else if (modelName.includes('claude') && keys.anthropic) {
-        provider = 'anthropic';
-        apiKey = keys.anthropic;
-    } else if ((modelName.includes('gpt') || modelName.includes('o1')) && keys.openai) {
-        provider = 'openai';
-        apiKey = keys.openai;
+${ideasSection}
+
+Respond ONLY with a valid JSON object in this exact format. Do not use markdown backticks:
+{
+  "introLore": "3 to 4 paragraphs, written to be read aloud to players at the very start of the campaign: the tone, the world, where the party begins, and an immediate hook that gives them a reason to act. Build on the players' ideas above. PUBLIC information only - do not reference anything secret here.",
+  "worldEntities": [
+    { "type": "locations | npcs | items | quests | lore | encounters", "name": "Proper name", "description": "Everything worth remembering about it, written as a reference fact for a future DM to stay consistent - not a narration.", "secret": true or false }
+  ]
+}
+
+GUIDELINES - your "worldEntities" array MUST include ALL SIX of the following, not just some:
+- "locations": the party's actual starting location ("secret": false - players need somewhere to begin), plus 2-4 more, a mix of public (nearby, known of) and secret (not yet discovered).
+- "npcs": 3-5, a mix of public (people the party could plausibly know or meet immediately) and secret (their true motives, allegiance, or even existence is not yet known to the players).
+- "items": at least 1-2 notable items - something the party starts with, or a known/legendary item tied to the local lore. Mix of public and secret (a hidden relic's true nature, for instance).
+- "quests": at least 1, "secret": false, giving the party an immediate, concrete reason to act right now.
+- "lore": 2-3 entries, mostly "secret": true - hidden history, a looming threat, a secret organization, the real cause behind something mentioned in introLore. This is groundwork for future reveals and twists - make it specific and interesting, tied to the NPCs/locations/items above, not generic.
+- "encounters": at least 1 - an immediate tactical, environmental, or social challenge the party could plausibly run into very soon (not necessarily right this second).
+- "secret": true entries are for the DM's own future reference only - never leak them into introLore, and never state them to players until they are earned or discovered through play.`;
+
+    if (config.OllamaConfig?.enabled) {
+        return callOllama(prompt).then(res => {
+            try {
+                return normaliseJson(res);
+            } catch (e) {
+                console.warn('-> Ollama campaign seed parsing failed, falling back to cloud providers:', e.message);
+                return fallbackToCloudProvidersForCampaignSeed(prompt);
+            }
+        }).catch(error => {
+            console.warn('-> Ollama call failed for campaign seed generation, falling back to cloud providers:', error.message);
+            return fallbackToCloudProvidersForCampaignSeed(prompt);
+        });
     }
-    
-    if (!provider || !apiKey) {
-        if (keys.gemini) {
-            provider = 'gemini';
-            apiKey = keys.gemini;
-        } else if (keys.anthropic) {
-            provider = 'anthropic';
-            apiKey = keys.anthropic;
-        } else if (keys.openai) {
-            provider = 'openai';
-            apiKey = keys.openai;
+
+    return fallbackToCloudProvidersForCampaignSeed(prompt);
+}
+
+function fallbackToCloudProvidersForCampaignSeed(prompt) {
+    const selected = selectCloudProvider();
+    if (!selected) {
+        console.warn('-> AI Provider: No valid cloud API keys found for campaign seed generation');
+        return Promise.resolve(null);
+    }
+
+    console.log(`-> Using ${selected.provider} as LLM provider for campaign seed generation`);
+
+    return callCloudProvider(selected.provider, selected.apiKey, prompt).then(res => {
+        if (!res) return null;
+        try {
+            return normaliseJson(res);
+        } catch (e) {
+            console.error(`Failed to parse campaign seed JSON from ${selected.provider}:`, e);
+            return null;
         }
-    }
+    });
+}
 
-    if (!provider || !apiKey) {
+function fallbackToCloudProvidersForEvents(prompt) {
+    const selected = selectCloudProvider();
+    if (!selected) {
         console.warn('-> AI Provider: Ollama is disabled and no valid cloud API keys found for event generation (tried Gemini -> Anthropic -> OpenAI)');
         return Promise.resolve(null);
     }
 
-    console.log(`-> Using ${provider} as LLM provider for event generation`);
-    
-    let promise;
-    if (provider === 'gemini') {
-        promise = callGemini(apiKey, prompt);
-    } else if (provider === 'anthropic') {
-        promise = callAnthropic(apiKey, prompt);
-    } else {
-        promise = callOpenAI(apiKey, prompt);
-    }
+    console.log(`-> Using ${selected.provider} as LLM provider for event generation`);
 
-    return promise.then(res => {
+    return callCloudProvider(selected.provider, selected.apiKey, prompt).then(res => {
         if (!res) return null;
         try {
-            if (typeof res === 'string' && res.includes('```')) {
-                res = res.replace(/```json/gi, '').replace(/```/g, '').trim();
-            }
-            return typeof res === 'string' ? JSON.parse(res) : res;
+            return parseJsonLoose(res);
         } catch (e) {
-            console.error(`Failed to parse next event JSON from ${provider}:`, e);
+            console.error(`Failed to parse next event JSON from ${selected.provider}:`, e);
             return null;
         }
     });
@@ -427,14 +461,16 @@ function fallbackToCloudProvidersForEvents(prompt) {
 
 
 
-function normaliseJson(input) {
-    if (typeof input === 'object' && input !== null) {
-        return flatten(input);
-    }
+// Robust "make a JSON-ish LLM response into an object" parser, without flattening nested
+// structure - use this directly when the expected shape has meaningful nesting (e.g.
+// generateNextEvent's { activeEvent: {...} }). normaliseJson() below layers flatten() on
+// top for the main DM-turn schema, where any nesting is a model mistake to be repaired.
+function parseJsonLoose(input) {
+    if (typeof input === 'object' && input !== null) return input;
     if (typeof input !== 'string') return input;
-    
+
     let str = input.replace(/```(?:json|javascript|js)?/gi, '').replace(/```/g, '').trim();
-    
+
     const start = str.indexOf('{');
     const end = str.lastIndexOf('}');
     if (start !== -1 && end !== -1 && end > start) {
@@ -448,22 +484,22 @@ function normaliseJson(input) {
         .replace(/\bFalse\b/g, 'false')
         .replace(/\bNone\b/g, 'null');
 
-    let parsed;
-
     try {
-        parsed = JSON.parse(str);
+        return JSON.parse(str);
     } catch (e1) {
         try {
-            parsed = new Function(`"use strict"; return (${str});`)();
+            return new Function(`"use strict"; return (${str});`)();
         } catch (e2) {
             const cleaned = str
                 .replace(/,\s*([\}\]])/g, '$1')
                 .replace(/[\r\n]+/g, ' ');
-            parsed = new Function(`"use strict"; return (${cleaned});`)();
+            return new Function(`"use strict"; return (${cleaned});`)();
         }
     }
+}
 
-    return flatten(parsed);
+function normaliseJson(input) {
+    return flatten(parseJsonLoose(input));
 }
 
 function flatten(obj, result = {}) {
@@ -479,4 +515,4 @@ function flatten(obj, result = {}) {
     return result;
 }
 
-module.exports = { buildPrompt, callModel, generateNextEvent };
+module.exports = { buildPrompt, callModel, generateNextEvent, generateCampaignSeed };

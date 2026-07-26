@@ -6,6 +6,7 @@ const charMapPath = path.join(dataDir, 'character_map.json');
 const charLogsPath = path.join(dataDir, 'character_logs.json');
 const playerLogsPath = path.join(dataDir, 'player_logs.json');
 const seenUsersPath = path.join(dataDir, 'seen_discord_users.json');
+const nicknamesPath = path.join(dataDir, 'discord_nicknames.json');
 
 function ensureDataDirectories() {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -28,6 +29,48 @@ function recordDiscordUser(username) {
         users.push(username);
         fs.writeFileSync(seenUsersPath, JSON.stringify(users, null, 2));
     }
+}
+
+// Server nicknames/display names (e.g. what Dice Maiden prints in its roll replies) can
+// differ from the Discord account username that character_map.json keys off of. This map
+// bridges the two so a nickname seen in the wild resolves back to the right bound character.
+function normalizeNickname(value = '') {
+    return String(value).toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+function loadNicknameMap() {
+    ensureDataDirectories();
+    if (!fs.existsSync(nicknamesPath)) return {};
+    try {
+        return JSON.parse(fs.readFileSync(nicknamesPath, 'utf8')) || {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function recordDiscordNickname(nickname, username) {
+    if (!nickname || !username) return;
+    const normalized = normalizeNickname(nickname);
+    if (!normalized) return;
+    const map = loadNicknameMap();
+    if (map[normalized] === username) return;
+    map[normalized] = username;
+    ensureDataDirectories();
+    fs.writeFileSync(nicknamesPath, JSON.stringify(map, null, 2));
+}
+
+// Resolves a display name (as seen in a message, e.g. from Dice Maiden) to the Discord
+// username used as the character_map.json key. Falls back to treating the input as
+// already being a username if no nickname mapping is found.
+function resolveUsernameByNickname(nickname) {
+    if (!nickname) return null;
+    const normalized = normalizeNickname(nickname);
+    const map = loadNicknameMap();
+    if (map[normalized]) return map[normalized];
+
+    const seenUsers = loadSeenDiscordUsers();
+    const directMatch = seenUsers.find((u) => normalizeNickname(u) === normalized);
+    return directMatch || null;
 }
 
 function loadCharacterMap() {
@@ -116,17 +159,25 @@ function saveCharacterLogs(logs) {
 function addCharacterLogs(newLogs) {
     if (!newLogs || !Array.isArray(newLogs) || newLogs.length === 0) return;
     const logs = loadCharacterLogs();
-    
+
     for (const log of newLogs) {
+        const character = String(log?.character || '').trim();
+        const text = String(log?.log || '').trim();
+        // A malformed LLM response (missing character/log) is worse than useless once it
+        // hits the dashboard, so reject it here rather than storing an empty placeholder entry.
+        if (!character || !text) {
+            console.warn('-> Skipped malformed character log entry:', JSON.stringify(log));
+            continue;
+        }
         logs.push({
             id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
-            character: String(log.character || '').trim(),
-            log: String(log.log || '').trim(),
+            character,
+            log: text,
             type: String(log.type || 'plot').trim(),
             timestamp: new Date().toISOString()
         });
     }
-    
+
     saveCharacterLogs(logs);
 }
 
@@ -176,6 +227,8 @@ module.exports = {
     addCharacterLogs,
     loadSeenDiscordUsers,
     recordDiscordUser,
+    recordDiscordNickname,
+    resolveUsernameByNickname,
     loadPlayerLogs,
     addPlayerLog,
     getPlayerLogsString

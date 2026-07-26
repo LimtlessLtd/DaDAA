@@ -71,8 +71,8 @@ function findTriggeredNotes(notes, text) {
 function startSessionZero() {
     sessionZeroActive = true;
     sessionZeroBuffer = [];
-    
-    const promptText = 'What should the world setting be? Describe your ideas, then say "we are done" to generate the lore and start the campaign.';
+
+    const promptText = 'Please give me prompts and ideas for the world and its lore.';
     const timestamp = new Date().toISOString();
     const broadcastMsg = `[${timestamp}] [DaDAA] ${promptText}\n`;
     

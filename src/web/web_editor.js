@@ -4,17 +4,18 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { exec } = require('child_process');
-const { getAllWorldData } = require('../data/data_manager');
-const { 
+const { getAllWorldData, clearAllEntities } = require('../data/data_manager');
+const {
     callRagServer,
-    loadRelationships, 
-    saveRelationships, 
-    addRelationship, 
-    initializeWorldContext, 
-    migrateRelationships, 
-    loadSessionState, 
-    saveSessionState, 
-    readTranscriptLog 
+    loadRelationships,
+    saveRelationships,
+    addRelationship,
+    initializeWorldContext,
+    migrateRelationships,
+    loadSessionState,
+    saveSessionState,
+    readTranscriptLog,
+    resetWorldCache
 } = require('../ai/context_manager');
 const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote, startSessionZero } = require('../sessions/session_manager');
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('../characters/character_manager');
@@ -167,8 +168,12 @@ function startWebEditor() {
                         'session_notes.json': '[]',
                         'session_reminders.json': '[]',
                         'session_state.json': '{"activeScene": null, "activeNpcs": [], "activeQuests": []}',
+                        'current_event.json': '{"activeEvent": null, "archivedEvents": []}',
                         'ai_memory.json': '{"summaries": []}',
-                        'transcript_log.txt': ''
+                        'transcript_log.txt': '',
+                        'character_map.json': '{}',
+                        'character_logs.json': '[]',
+                        'campaign_intro.json': '{"text": null, "generatedAt": null}'
                     };
 
                     Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
@@ -180,9 +185,23 @@ function startWebEditor() {
                         }
                     });
 
-                    // 3. Start the new session
+                    // 3. Wipe stored world entities (NPCs/locations/lore/etc. from the old
+                    // campaign) and the in-memory cache built from them, so nothing lingers
+                    // into the new campaign.
+                    clearAllEntities();
+                    resetWorldCache();
+
+                    // 4. Start Session Zero: the DM asks players for world ideas over voice.
+                    // Campaign generation itself (intro lore, secret/public entities, the
+                    // opening event) happens later, in index.js, once players say they're
+                    // done - see handleSessionZeroInput(). This endpoint only wipes and
+                    // kicks off listening; it does not wait for or trigger generation.
                     startSessionZero();
-                    sendJson(res, 200, { ok: true, message: 'Database and local memory wiped; Session Zero triggered.' });
+
+                    sendJson(res, 200, {
+                        ok: true,
+                        message: 'Campaign data wiped. The DM is now asking players for world ideas over voice - say "we are done" when ready to begin.'
+                    });
                 } catch (err) {
                     sendJson(res, 500, { error: err.message });
                 }
@@ -498,6 +517,48 @@ function startWebEditor() {
         if (pathname === '/api/character_logs') {
             if (req.method === 'GET') {
                 sendJson(res, 200, loadCharacterLogs());
+                return;
+            }
+        }
+
+        if (pathname === '/api/campaign_intro') {
+            if (req.method === 'GET') {
+                const filePath = path.join(TEMP_DATA_ROOT, 'campaign_intro.json');
+                if (!fs.existsSync(filePath)) {
+                    sendJson(res, 200, { text: null, generatedAt: null });
+                    return;
+                }
+                try {
+                    sendJson(res, 200, JSON.parse(fs.readFileSync(filePath, 'utf8')));
+                } catch (err) {
+                    sendJson(res, 200, { text: null, generatedAt: null });
+                }
+                return;
+            }
+        }
+
+        if (pathname === '/api/world_entities') {
+            if (req.method === 'GET') {
+                try {
+                    const worldData = await getAllWorldData();
+                    const types = ['npcs', 'locations', 'items', 'quests', 'lore', 'encounters'];
+                    const entities = [];
+                    for (const type of types) {
+                        for (const record of (worldData[type] || [])) {
+                            entities.push({
+                                id: record.id,
+                                type,
+                                name: record.name || 'Unnamed',
+                                description: record.description || '',
+                                secret: !!record.secret
+                            });
+                        }
+                    }
+                    entities.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+                    sendJson(res, 200, entities);
+                } catch (err) {
+                    sendJson(res, 500, { error: err.message });
+                }
                 return;
             }
         }

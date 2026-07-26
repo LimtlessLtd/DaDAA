@@ -6,20 +6,40 @@ const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinAndListen, speakText } = require('./src/voice/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
-const { 
-    initializeWorldContext, 
-    appendTranscript, 
-    readTranscriptLog, 
-    buildDmSuggestion, 
-    loadSessionState, 
+const {
+    initializeWorldContext,
+    appendTranscript,
+    readTranscriptLog,
+    loadSessionState,
     saveSessionState,
-    findRelevantRecords
+    findRelevantRecords,
+    addWorldEntities,
+    callRagServer
 } = require('./src/ai/context_manager');
-const { rememberSummary, summarizeTranscript, rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai/ai_helper');
-const { buildPrompt, callModel, generateNextEvent } = require('./src/ai/ai_provider');
+const { rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai/ai_helper');
+const { buildPrompt, callModel, generateNextEvent, generateCampaignSeed } = require('./src/ai/ai_provider');
 const { startWebEditor } = require('./src/web/web_editor');
-const { loadSessionNotes, findTriggeredNotes } = require('./src/sessions/session_manager');
-const { bindCharacter, unbindCharacter, getCharacterMapString, addCharacterLogs, loadCharacterLogs, recordDiscordUser, getPlayerLogsString, getBoundCharacterName } = require('./src/characters/character_manager');
+const {
+    loadSessionNotes,
+    findTriggeredNotes,
+    isSessionZeroActive,
+    addSessionZeroInput,
+    endSessionZero
+} = require('./src/sessions/session_manager');
+const { addPendingCheck, resolvePendingCheck } = require('./src/sessions/check_manager');
+const { isDiceMaidenMessage, parseDiceMaidenRoll, isDiceMaidenError } = require('./src/dice/dice_maiden');
+const {
+    bindCharacter,
+    unbindCharacter,
+    getCharacterMapString,
+    addCharacterLogs,
+    loadCharacterLogs,
+    recordDiscordUser,
+    recordDiscordNickname,
+    resolveUsernameByNickname,
+    getPlayerLogsString,
+    getBoundCharacterName
+} = require('./src/characters/character_manager');
 const config = require('./config.json');
 
 console.log('-> Starting DaDAA...');
@@ -86,15 +106,15 @@ function saveSessionReminders(reminders) {
     fs.writeFileSync(SESSION_REMINDERS_PATH, JSON.stringify(reminders, null, 2), 'utf8');
 }
 
-async function handleSilenceDriver() {
-    console.log('-> Sustained silence detected. Prompting DM AI to drive the narrative...');
-    if (!worldContext) return;
+// Shared pipeline: build world context, call the LLM, and react to its reply.
+// Used for real transcribed speech, the silence driver's synthetic prompt, and
+// dice-roll resolutions - anywhere a "DM turn" needs to happen.
+async function runDmTurn(transcript) {
+    if (!worldContext) return null;
 
-    const fakeTranscript = "(Players are silent and awaiting the Dungeon Master's lead)";
-    
-    const relevantRecords = await findRelevantRecords(fakeTranscript);
+    const relevantRecords = await findRelevantRecords(transcript);
     const sessionState = loadSessionState();
-    
+
     let currentEventString = '';
     const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
     let currentEventData = { activeEvent: null, archivedEvents: [] };
@@ -104,62 +124,72 @@ async function handleSilenceDriver() {
             if (currentEventData.activeEvent) {
                 currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}`;
             }
-        } catch(e) {}
+        } catch (e) {}
     }
-    
+
     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
+Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? ' [SECRET]' : ''}: ${record.name} - ${(record.description || 'No description').slice(0, 300)}`).join('\n') || 'None'}
     `.trim();
 
     const rollingSummary = getRollingSummary();
     const characterMapStr = getCharacterMapString();
     const playerLogsStr = getPlayerLogsString();
-    const prompt = buildPrompt(fakeTranscript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
-    
-    const activeModel = config.OllamaConfig?.enabled 
-        ? config.OllamaConfig?.model || 'neural-chat' 
-        : config.LLM;
+    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
+
+    const activeModelName = config.OllamaConfig?.enabled
+        ? config.OllamaConfig?.model || 'neural-chat'
+        : config.LLM || 'Unknown Model';
 
     saveLlmDebug({
         timestamp: new Date().toISOString(),
         model: activeModelName,
         latencyMs: 0,
-        transcript: "Silence",
+        transcript: transcript,
         contextString: contextString,
         rollingSummary: rollingSummary,
         fullPrompt: prompt,
-        rawResponse: { reason: "Silence Timeout Triggered" },
+        rawResponse: { reason: "Analyzing... (in-flight API request)" },
         stats: stats
     });
 
     const apiStartTime = Date.now();
     stats.llmCalls++;
-    
+
     try {
         const aiReply = await callModel(prompt);
         const latency = Date.now() - apiStartTime;
         stats.lastLatencyMs = latency;
-        
+
         if (aiReply) {
-            console.log(`-> AI Silence evaluation: `, JSON.stringify(aiReply));
-            
+            console.log('-> AI evaluation:', JSON.stringify(aiReply));
+
             if (aiReply.spokenNarrative) {
                 console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
                 speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
-                
-                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now()); 
+                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
             }
 
-            const isImportantInsight = aiReply.suggestion && !aiReply.isOOC;
+            const isImportantInsight = aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant;
             if (isImportantInsight) {
                 stats.importantInsights++;
-                rememberAiInsight(aiReply, "Silence");
+                rememberAiInsight(aiReply, transcript);
             }
 
             if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
                 addCharacterLogs(aiReply.characterLogs);
+            }
+
+            if (aiReply.worldEntities && Array.isArray(aiReply.worldEntities) && aiReply.worldEntities.length > 0) {
+                addWorldEntities(aiReply.worldEntities).catch(err => console.warn('-> Failed to save world entities:', err.message));
+            }
+
+            if (aiReply.checkCharacter && aiReply.checkSkill && aiReply.checkDc) {
+                const check = addPendingCheck(aiReply.checkCharacter, aiReply.checkSkill, aiReply.checkDc);
+                if (check) {
+                    console.log(`-> Pending check registered: ${check.character} - ${check.skill} DC ${check.dc}`);
+                }
             }
 
             if (currentEventData.activeEvent && aiReply.eventStatus) {
@@ -168,7 +198,7 @@ Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`)
 
                 if (status === 'resolved') {
                     console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
-                    
+
                     currentEventData.archivedEvents.push({
                         title: currentEventData.activeEvent.title,
                         resolution: aiReply.resolutionSummary,
@@ -187,31 +217,218 @@ Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`)
 
                 } else if (status === 'escalated' || status === 'evolved') {
                     console.log(`-> Event Morphing: Updating stakes/complications.`);
-                    
+
                     currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
-                    
+
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                    console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${currentEventData.activeEvent.complication}`);
                 }
             }
-            
+
             saveLlmDebug({
                 timestamp: new Date().toISOString(),
                 model: activeModelName,
                 latencyMs: latency,
-                transcript: "Silence",
+                transcript: transcript,
                 contextString: contextString,
                 rollingSummary: rollingSummary,
                 fullPrompt: prompt,
                 rawResponse: aiReply,
                 stats: stats
             });
+        } else {
+            saveLlmDebug({
+                timestamp: new Date().toISOString(),
+                model: activeModelName,
+                latencyMs: 0,
+                transcript: transcript,
+                contextString: contextString,
+                rollingSummary: rollingSummary,
+                fullPrompt: prompt,
+                rawResponse: {
+                    isOOC: false,
+                    isImportant: false,
+                    suggestion: "Configure an API key in your .env file to enable live DM guidance.",
+                    reason: "The AI provider returned null or failed to run successfully."
+                },
+                stats: stats
+            });
         }
+
+        return aiReply;
     } catch (error) {
-        console.warn('-> Silence Driver AI provider unavailable:', error.message);
+        const latency = Date.now() - apiStartTime;
+        console.warn('-> AI provider unavailable:', error.message);
+        saveLlmDebug({
+            timestamp: new Date().toISOString(),
+            model: "API Error",
+            latencyMs: latency,
+            transcript: transcript,
+            contextString: contextString,
+            rollingSummary: rollingSummary,
+            fullPrompt: prompt,
+            rawResponse: {
+                isOOC: false,
+                isImportant: false,
+                suggestion: `Error: ${error.message}`,
+                reason: "An exception occurred while connecting to the LLM endpoint."
+            },
+            stats: stats
+        });
+        return null;
     }
-    
+}
+
+// The one and only player-idea-driven Session Zero flow. While active, every transcribed
+// utterance comes here instead of runDmTurn() - buffered as raw world-building input, not
+// reacted to as in-character speech. When a player signals they're done, this generates the
+// actual campaign (intro lore + public/secret NPCs/locations/lore) from what was said, saves
+// it, reads the introduction aloud, then generates and announces the opening event for
+// Session 1. Triggered by real voice input; started by /api/start_campaign (see
+// web_editor.js), which only wipes old data and kicks off listening.
+const SESSION_ZERO_FINISH_REGEX = /(we('re| are) (done|finished|good|set))|(that's (it|all))|(all done)|(generate (it|the world) now)|(let's start)/i;
+
+async function handleSessionZeroInput(sourceLabel, transcript) {
+    addSessionZeroInput(sourceLabel, transcript);
+
+    if (!SESSION_ZERO_FINISH_REGEX.test(transcript)) return;
+
+    const compiledIdeas = endSessionZero();
+    console.log('-> Session Zero complete. Generating campaign from player ideas...');
+
+    let seed = null;
+    try {
+        seed = await generateCampaignSeed(compiledIdeas);
+    } catch (err) {
+        console.warn('-> Campaign seed generation failed:', err.message);
+    }
+
+    if (!seed) {
+        speakText("Something went wrong generating the world. Please check the AI provider is configured and reachable, then start the campaign again.");
+        return;
+    }
+
+    if (seed.introLore) {
+        await callRagServer('/add', {
+            collection: 'dnd_knowledge',
+            documents: [seed.introLore],
+            metadatas: [{ source: 'campaign_seed', category: 'lore', name: 'Campaign Introduction' }],
+            ids: ['campaign_intro']
+        }).catch(() => {});
+
+        // Also kept as a plain file so the dashboard can display it without needing to
+        // query the RAG server.
+        try {
+            fs.writeFileSync(
+                path.join(TEMP_DATA_DIR, 'campaign_intro.json'),
+                JSON.stringify({ text: seed.introLore, generatedAt: new Date().toISOString() }, null, 2),
+                'utf8'
+            );
+        } catch (e) {
+            console.warn('-> Failed to save campaign_intro.json:', e.message);
+        }
+    }
+
+    if (Array.isArray(seed.worldEntities)) {
+        await addWorldEntities(seed.worldEntities);
+    }
+
+    if (seed.introLore) {
+        console.log('-> Speaking campaign introduction...');
+        speakText(seed.introLore, 'narrator');
+        appendTranscript(seed.introLore, 'Dungeon Master (narrator)', Date.now());
+    }
+
+    try {
+        const eventObj = await generateNextEvent(
+            [],
+            seed.introLore || 'A new campaign has just begun.',
+            'The players have just finished Session Zero and are ready to begin their first scene.'
+        );
+
+        if (eventObj && eventObj.activeEvent) {
+            const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
+            fs.writeFileSync(eventPath, JSON.stringify({ activeEvent: eventObj.activeEvent, archivedEvents: [] }, null, 2), 'utf8');
+
+            const announcement = `Session One begins. ${eventObj.activeEvent.description}`;
+            console.log('-> Announcing opening event:', eventObj.activeEvent.title);
+            speakText(announcement, 'narrator');
+            appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+        }
+    } catch (err) {
+        console.warn('-> Failed to generate opening event:', err.message);
+    }
+}
+
+async function handleSilenceDriver() {
+    console.log('-> Sustained silence detected. Prompting DM AI to drive the narrative...');
+
+    if (isSessionZeroActive()) return;
+
+    const fakeTranscript = "(Players are silent and awaiting the Dungeon Master's lead)";
+    await runDmTurn(fakeTranscript);
+
     if (silenceTimer) clearTimeout(silenceTimer);
     silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
+}
+
+// Attributing a Dice Maiden roll to a player: prefer Discord's own interaction metadata
+// (the invoking user, when Dice Maiden replied to a real slash-command interaction) since
+// it's unambiguous; fall back to the display name Dice Maiden prints in the message itself,
+// resolved through the nickname map recorded during voice transcription.
+async function handleDiceMaidenRoll(message) {
+    if (isDiceMaidenError(message.content)) {
+        console.log('-> Dice Maiden rejected an invalid roll expression, ignoring:', message.content);
+        return;
+    }
+
+    const roll = parseDiceMaidenRoll(message.content);
+    if (!roll) {
+        console.warn('-> Could not parse Dice Maiden message:', message.content);
+        return;
+    }
+
+    const interactionUser = message.interactionMetadata?.user || message.interaction?.user;
+    let username = interactionUser ? (interactionUser.username || interactionUser.tag) : null;
+    if (!username && roll.rollerDisplayName) {
+        username = resolveUsernameByNickname(roll.rollerDisplayName);
+    }
+
+    if (!username) {
+        console.warn(`-> Dice roll could not be attributed to a player: "${message.content}"`);
+        return;
+    }
+
+    const character = getBoundCharacterName(username);
+    if (!character) {
+        console.log(`-> Dice roll from ${username} (${roll.notation || 'dice'}: ${roll.total}) - no bound character, skipping.`);
+        return;
+    }
+
+    const pending = resolvePendingCheck(character);
+    if (!pending) {
+        appendTranscript(`${character} rolled ${roll.notation || 'dice'}: ${roll.total} (no pending check)`, 'Dice', Date.now());
+        return;
+    }
+
+    // Natural 20/1 override the DC math entirely (house rule) - a high-modifier character
+    // can still fumble, and a poorly-built one can still pull off the impossible.
+    let success = roll.total >= pending.dc;
+    let outcomeLabel = success ? 'SUCCESS' : 'FAILURE';
+    if (roll.isCriticalSuccess) {
+        success = true;
+        outcomeLabel = 'CRITICAL SUCCESS (NATURAL 20)';
+    } else if (roll.isCriticalFailure) {
+        success = false;
+        outcomeLabel = 'CRITICAL FAILURE (NATURAL 1)';
+    }
+
+    const resultLine = `${character} rolled ${roll.total} for ${pending.skill} (DC ${pending.dc}): ${outcomeLabel}`;
+    console.log(`-> ${resultLine}`);
+    appendTranscript(resultLine, 'Dice', Date.now());
+
+    runDmTurn(`[Dice Roll Result] ${resultLine}`);
 }
 
 client.once('clientReady', () => {
@@ -270,7 +487,12 @@ client.once('clientReady', () => {
 });
 
 client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
+    if (message.author.bot) {
+        if (isDiceMaidenMessage(message)) {
+            await handleDiceMaidenRoll(message);
+        }
+        return;
+    }
 
     if (message.content === '!join') {
         const voiceChannel = message.member?.voice?.channel;
@@ -278,21 +500,27 @@ client.on('messageCreate', async (message) => {
             joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript, startTime) => {
                 let sourceLabel = userId;
                 let discordName = userId;
-                
+
                 try {
-                    const userObj = await client.users.fetch(userId);
+                    const member = await message.guild.members.fetch(userId).catch(() => null);
+                    const userObj = member?.user || await client.users.fetch(userId);
                     if (userObj && (userObj.username || userObj.tag)) {
                         discordName = userObj.username || userObj.tag;
-                        
+
                         const charName = getBoundCharacterName(discordName);
                         sourceLabel = charName ? charName : discordName;
+
+                        // Dice Maiden replies use the server nickname, not the account
+                        // username - capture the mapping here so roll matching can resolve it later.
+                        const nickname = member?.nickname || member?.displayName;
+                        if (nickname) recordDiscordNickname(nickname, discordName);
                     }
                 } catch (e) { /* fallback to id */ }
-                
+
                 console.log(`\n[Audio Transcribed] ${sourceLabel} (${discordName}): "${transcript}"`);
 
                 recordDiscordUser(discordName);
-                appendTranscript(transcript, sourceLabel, Date.now()); 
+                appendTranscript(transcript, sourceLabel, Date.now());
                 
                 stats.totalUtterances++;
                 
@@ -315,7 +543,9 @@ client.on('messageCreate', async (message) => {
                     silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
                 }
 
-                if (worldContext) {
+                if (isSessionZeroActive()) {
+                    handleSessionZeroInput(sourceLabel, transcript);
+                } else if (worldContext) {
                     const sessionNotes = loadSessionNotes();
                     const triggered = findTriggeredNotes(sessionNotes, transcript);
                     saveSessionReminders(triggered);
@@ -324,157 +554,7 @@ client.on('messageCreate', async (message) => {
                         console.log('-> Triggered session notes:', dmBody);
                     }
 
-                    const relevantRecords = await findRelevantRecords(transcript);
-
-                    const sessionState = loadSessionState();
-                    let currentEventString = '';
-                    const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
-                    let currentEventData = { activeEvent: null, archivedEvents: [] };
-                    if (fs.existsSync(eventPath)) {
-                        try {
-                            currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
-                            if (currentEventData.activeEvent) {
-                                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}`;
-                            }
-                        } catch(e) {}
-                    }
-                    
-                    const contextString = `
-                        Current Scene: ${sessionState.activeScene || 'Unknown'}
-                        Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
-                        Records: ${relevantRecords.map((record) => `${record.category}: ${record.name}`).join('\n') || 'None'}
-                    `.trim();
-
-                    const rollingSummary = getRollingSummary();
-                    const characterMapStr = getCharacterMapString();
-                    const playerLogsStr = getPlayerLogsString();
-                    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
-                    
-                    const activeModelName = config.OllamaConfig?.enabled 
-                        ? config.OllamaConfig?.model || 'neural-chat' 
-                        : config.LLM || 'Unknown Model';
-
-                    saveLlmDebug({
-                        timestamp: new Date().toISOString(),
-                        model: activeModelName,
-                        latencyMs: 0,
-                        transcript: transcript,
-                        contextString: contextString,
-                        rollingSummary: rollingSummary,
-                        fullPrompt: prompt,
-                        rawResponse: { reason: "Analyzing speech in background... (In-flight API request)" },
-                        stats: stats
-                    });
-
-                    const apiStartTime = Date.now();
-                    stats.llmCalls++;
-                    
-                    callModel(prompt)
-                        .then((aiReply) => {
-                            const latency = Date.now() - apiStartTime;
-                            stats.lastLatencyMs = latency;
-
-                            console.log("string after normalisation : ", JSON.stringify(aiReply));
-                            
-                            if (aiReply) {
-                                if (aiReply.spokenNarrative) {
-                                    console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
-                                    speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
-                                    appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now()); 
-                                } else {
-                                    console.log(`-> WARNING: AI generated response but no spokenNarrative`); 
-                                }
-
-                                const isImportantInsight = aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant;
-                                if (isImportantInsight) {
-                                    stats.importantInsights++;
-                                    rememberAiInsight(aiReply, transcript);
-                                }
-
-                                if (aiReply.characterLogs && Array.isArray(aiReply.characterLogs) && aiReply.characterLogs.length > 0) {
-                                    addCharacterLogs(aiReply.characterLogs);
-                                }
-
-                                if (currentEventData.activeEvent && aiReply.eventStatus) {
-                                    const status = aiReply.eventStatus.toLowerCase();
-                                    console.log(`-> Event Evaluation [${currentEventData.activeEvent.title}]: ${status.toUpperCase()}`);
-
-                                    if (status === 'resolved') {
-                                        currentEventData.archivedEvents.push({
-                                            title: currentEventData.activeEvent.title,
-                                            resolution: aiReply.resolutionSummary,
-                                            endedAt: new Date().toISOString()
-                                        });
-                                        currentEventData.activeEvent = null;
-                                        fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-
-                                        generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
-                                            .then(newEventObj => {
-                                                if (newEventObj && newEventObj.activeEvent) {
-                                                    currentEventData.activeEvent = newEventObj.activeEvent;
-                                                    fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                                }
-                                            }).catch(err => console.error('-> Failed to generate new event:', err));
-
-                                    } else if (status === 'escalated' || status === 'evolved') {
-                                        currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
-                                        
-                                        fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                        
-                                        console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${currentEventData.activeEvent.complication}`);
-                                    }
-                                }
-                                
-                                saveLlmDebug({
-                                    timestamp: new Date().toISOString(),
-                                    model: activeModelName,
-                                    latencyMs: latency,
-                                    transcript: transcript,
-                                    contextString: contextString,
-                                    rollingSummary: rollingSummary,
-                                    fullPrompt: prompt,
-                                    rawResponse: aiReply,
-                                    stats: stats
-                                });
-                            } else {
-                                saveLlmDebug({
-                                    timestamp: new Date().toISOString(),
-                                    model: activeModelName,
-                                    latencyMs: 0,
-                                    transcript: transcript,
-                                    contextString: contextString,
-                                    rollingSummary: rollingSummary,
-                                    fullPrompt: prompt,
-                                    rawResponse: { 
-                                        isOOC: false,
-                                        isImportant: false,
-                                        suggestion: "Configure an API key in your .env file to enable live DM guidance.",
-                                        reason: "The AI provider returned null or failed to run successfully."
-                                    },
-                                    stats: stats
-                                });
-                            }
-                        })
-                        .catch((error) => {
-                            const latency = Date.now() - apiStartTime;
-                            console.warn('-> AI provider unavailable:', error.message);
-                            saveLlmDebug({
-                                timestamp: new Date().toISOString(),
-                                model: "API Error",
-                                latencyMs: latency,
-                                transcript: transcript,
-                                contextString: contextString,
-                                rollingSummary: rollingSummary,
-                                fullPrompt: prompt,
-                                rawResponse: { 
-                                    isOOC: false,
-                                    isImportant: false,
-                                    suggestion: `Error: ${error.message}`,
-                                    reason: "An exception occurred while connecting to the LLM endpoint."
-                                },
-                                stats: stats
-                            });
-                        });
+                    runDmTurn(transcript);
                 }
             });
             message.reply('Listening to the channel!');
