@@ -261,4 +261,13 @@ async function processTtsQueue() {
     }
 }
 
-module.exports = { joinAndListen, speakText };
+// A single DM turn can queue several dialogue segments (narrator + an NPC line + narrator again -
+// see ai_provider.js guideline 5), so if a campaign reset happens mid-turn, whatever's still
+// queued would otherwise keep playing right through the reset, sounding like the DM is still
+// talking about the old campaign. Call this on "Start New Campaign"/purge to flush it.
+function stopSpeaking() {
+    ttsQueue = [];
+    audioPlayer.stop(true);
+}
+
+module.exports = { joinAndListen, speakText, stopSpeaking };

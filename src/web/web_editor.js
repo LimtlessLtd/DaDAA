@@ -21,6 +21,7 @@ const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote, s
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('../characters/character_manager');
 const { getRollingSummary } = require('../ai/ai_helper');
 const { generateNextEvent } = require('../ai/ai_provider');
+const { stopSpeaking } = require('../voice/voice_manager');
 
 const UI_ROOT = path.join(__dirname, '..', '..', 'UI');
 const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
@@ -157,12 +158,18 @@ function startWebEditor() {
         if (pathname === '/api/start_campaign') {
             if (req.method === 'POST') {
                 try {
-                    // 1. Wipe RAG collections
+                    // 1. Stop anything still queued/playing from the old campaign - a DM turn can
+                    // queue several dialogue segments (narrator + NPC line + narrator again), so
+                    // without this, whatever's still queued when the reset happens keeps playing
+                    // right through it, sounding like the DM is still talking about the old game.
+                    stopSpeaking();
+
+                    // 2. Wipe RAG collections
                     await callRagServer('/clear', { collection: 'dnd_knowledge' }).catch(() => {});
                     await callRagServer('/clear', { collection: 'dnd_transcripts' }).catch(() => {});
                     await callRagServer('/clear', { collection: 'dnd_insights' }).catch(() => {});
 
-                    // 2. Reset physical files on disk (the "purge" logic)
+                    // 3. Reset physical files on disk (the "purge" logic)
                     const filesToReset = {
                         'relationships.json': '[]',
                         'session_notes.json': '[]',
@@ -174,7 +181,9 @@ function startWebEditor() {
                         'character_map.json': '{}',
                         'character_logs.json': '[]',
                         'character_voices.json': '{}',
-                        'campaign_intro.json': '{"text": null, "generatedAt": null}'
+                        'campaign_intro.json': '{"text": null, "generatedAt": null}',
+                        'pending_checks.json': '[]',
+                        'player_logs.json': '[]'
                     };
 
                     Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
@@ -186,13 +195,13 @@ function startWebEditor() {
                         }
                     });
 
-                    // 3. Wipe stored world entities (NPCs/locations/lore/etc. from the old
+                    // 4. Wipe stored world entities (NPCs/locations/lore/etc. from the old
                     // campaign) and the in-memory cache built from them, so nothing lingers
                     // into the new campaign.
                     clearAllEntities();
                     resetWorldCache();
 
-                    // 4. Start Session Zero: the DM asks players for world ideas over voice.
+                    // 5. Start Session Zero: the DM asks players for world ideas over voice.
                     // Campaign generation itself (intro lore, secret/public entities, the
                     // opening event) happens later, in index.js, once players say they're
                     // done - see handleSessionZeroInput(). This endpoint only wipes and
@@ -587,9 +596,11 @@ function startWebEditor() {
 
         if (req.method === 'POST' && pathname === '/api/rag_clear') {
             try {
-                const { callRagServer } = require('./context_manager');
                 await callRagServer('/clear', { collection: 'dnd_knowledge' });
                 await callRagServer('/clear', { collection: 'dnd_transcripts' });
+                // Without this, the in-memory worldDbCache/exactNameCache in context_manager.js
+                // would keep serving the just-deleted entities until the bot restarts.
+                resetWorldCache();
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ status: 'success' }));
             } catch (e) {

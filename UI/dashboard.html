@@ -201,7 +201,7 @@
             <option value="encounters">Encounters</option>
           </select>
         </div>
-        <div id="worldEntitiesList" style="max-height: 320px; overflow-y: auto;">
+        <div id="worldEntitiesList" style="max-height: 480px; overflow-y: auto;">
           No world entities recorded yet.
         </div>
       </div>
@@ -546,6 +546,21 @@
 
     let worldEntitiesCache = [];
 
+    // Fixed display order (not alphabetical - reads more naturally as an intro to the world:
+    // who's in it, where it happens, what's around, what's to do, then background/secrets).
+    const WORLD_ENTITY_CATEGORIES = [
+      { type: 'npcs', label: 'NPCs' },
+      { type: 'locations', label: 'Locations' },
+      { type: 'items', label: 'Items' },
+      { type: 'quests', label: 'Quests' },
+      { type: 'lore', label: 'Lore' },
+      { type: 'encounters', label: 'Encounters' }
+    ];
+
+    // Which category sections are collapsed - persists across the 5s auto-refresh re-rendering
+    // this whole list from scratch, same pattern as expandedTranscriptItems above.
+    const collapsedWorldCategories = new Set();
+
     async function loadWorldEntities() {
       try {
         const res = await fetch('/api/world_entities');
@@ -561,25 +576,57 @@
       const container = document.getElementById('worldEntitiesList');
       const filterEl = document.getElementById('worldEntityFilter');
       const filter = filterEl ? filterEl.value : '';
-      const entities = filter ? worldEntitiesCache.filter((e) => e.type === filter) : worldEntitiesCache;
 
-      if (!entities.length) {
+      const categories = filter
+        ? WORLD_ENTITY_CATEGORIES.filter((c) => c.type === filter)
+        : WORLD_ENTITY_CATEGORIES;
+
+      const sections = categories
+        .map(({ type, label }) => {
+          const entities = worldEntitiesCache.filter((e) => e.type === type);
+          if (entities.length === 0) return '';
+
+          const isCollapsed = collapsedWorldCategories.has(type);
+          const cardsHtml = entities.map((e) => `
+            <div class="item">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <strong style="color: #3b82f6;">${escapeHtml(e.name)}</strong>
+                ${e.secret ? '<span class="status-badge" style="background: #7f1d1d; color: #fca5a5; border-color: #991b1b; font-size: 0.65rem;">SECRET</span>' : ''}
+              </div>
+              <div style="color: #cbd5e1; font-size: 0.8rem; margin-top: 4px;">${escapeHtml(e.description)}</div>
+            </div>
+          `).join('');
+
+          return `
+            <div class="world-category">
+              <div class="world-category-header" data-category-type="${escapeHtml(type)}" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 6px 8px; background: #16213a; border-radius: 6px; margin-bottom: ${isCollapsed ? '10px' : '8px'};">
+                <span style="text-transform: uppercase; color: #f59e0b; font-weight: bold; font-size: 0.75rem; letter-spacing: 0.04em;">${escapeHtml(label)} (${entities.length})</span>
+                <span style="color: #64748b; font-size: 0.7rem;">${isCollapsed ? '▶' : '▼'}</span>
+              </div>
+              ${isCollapsed ? '' : cardsHtml}
+            </div>
+          `;
+        })
+        .join('');
+
+      if (!sections.trim()) {
         container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem; padding: 4px;">No world entities recorded yet.</div>';
         return;
       }
 
-      container.innerHTML = entities.map((e) => `
-        <div class="item">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="text-transform: uppercase; color: #f59e0b; font-weight: bold; font-size: 0.7rem;">${escapeHtml(e.type)}</span>
-            ${e.secret ? '<span class="status-badge" style="background: #7f1d1d; color: #fca5a5; border-color: #991b1b; font-size: 0.65rem;">SECRET</span>' : ''}
-          </div>
-          <div style="margin-top: 4px;">
-            <strong style="color: #3b82f6;">${escapeHtml(e.name)}</strong>
-            <div style="color: #cbd5e1; font-size: 0.8rem; margin-top: 2px;">${escapeHtml(e.description)}</div>
-          </div>
-        </div>
-      `).join('');
+      container.innerHTML = sections;
+
+      container.querySelectorAll('.world-category-header').forEach((header) => {
+        header.addEventListener('click', () => {
+          const type = header.getAttribute('data-category-type');
+          if (collapsedWorldCategories.has(type)) {
+            collapsedWorldCategories.delete(type);
+          } else {
+            collapsedWorldCategories.add(type);
+          }
+          renderWorldEntities();
+        });
+      });
     }
 
     async function loadCharacterLogs() {
@@ -849,8 +896,8 @@
     });
 
     document.getElementById('clearRagBtn').addEventListener('click', async () => {
-      if (!confirm("Are you sure you want to wipe the RAG database? You must restart the bot afterward to re-sync Foundry data.")) return;
-      
+      if (!confirm("Are you sure you want to wipe the RAG database? This deletes all stored world knowledge and cannot be undone.")) return;
+
       const btn = document.getElementById('clearRagBtn');
       const originalText = btn.innerText;
       btn.innerText = 'Wiping...';
@@ -859,7 +906,7 @@
       try {
         const res = await fetch('/api/rag_clear', { method: 'POST' });
         if (res.ok) {
-          alert('Database wiped cleanly! Restart your bot to start fresh.');
+          alert('Database wiped clean.');
           document.getElementById('ragSearchResults').innerHTML = '<div style="color: #10b981;">Database wiped clean.</div>';
         } else {
           alert('Failed to wipe database.');
