@@ -284,7 +284,10 @@
             Knowledge Base (Vector Search)
             <span class="status-badge" style="background: #064e3b; color: #34d399; border-color: #047857;">ChromaDB Connected</span>
           </div>
-          <button id="clearRagBtn" style="background: #b91c1c; padding: 4px 8px; font-size: 0.75rem;">Wipe Database</button>
+          <div style="display: flex; gap: 8px;">
+            <button id="refreshWorldBtn" style="background: #334155; padding: 4px 8px; font-size: 0.75rem;" title="Re-sync world data from disk into RAG and the in-memory cache, without restarting the bot">Refresh World Data</button>
+            <button id="clearRagBtn" style="background: #b91c1c; padding: 4px 8px; font-size: 0.75rem;">Wipe Database</button>
+          </div>
         </div>
         <div class="input-group" style="flex-direction: row; align-items: center;">
           <input type="text" id="ragSearchInput" placeholder="Search the AI DM's brain..." style="flex: 1;" />
@@ -910,6 +913,28 @@
           document.getElementById('ragSearchResults').innerHTML = '<div style="color: #10b981;">Database wiped clean.</div>';
         } else {
           alert('Failed to wipe database.');
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+      } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('refreshWorldBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('refreshWorldBtn');
+      const originalText = btn.innerText;
+      btn.innerText = 'Refreshing...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/refresh', { method: 'POST' });
+        if (res.ok) {
+          loadWorldEntities();
+          loadCampaignIntro();
+        } else {
+          alert('Failed to refresh world data.');
         }
       } catch (e) {
         alert('Error: ' + e.message);

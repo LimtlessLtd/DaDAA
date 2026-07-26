@@ -101,31 +101,6 @@ function saveEntity(entityType, entity) {
     return entity;
 }
 
-function deleteEntity(entityType, entityId) {
-    const tempDataPath = path.join(__dirname, '..', '..', 'temp_data');
-    const filePath = path.join(tempDataPath, entityType, `${entityId}.json`);
-    
-    if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log(`-> Deleted ${entityType}/${entityId}`);
-        return true;
-    }
-    
-    return false;
-}
-
-function getEntity(entityType, entityId) {
-    const tempDataPath = path.join(__dirname, '..', '..', 'temp_data');
-    const filePath = path.join(tempDataPath, entityType, `${entityId}.json`);
-
-    if (fs.existsSync(filePath)) {
-        const content = fs.readFileSync(filePath, 'utf8');
-        return JSON.parse(content);
-    }
-
-    return null;
-}
-
 // Deletes every stored entity file across all types - used when starting a fresh campaign,
 // so old NPCs/locations/lore don't linger alongside newly-generated ones.
 function clearAllEntities() {
@@ -152,7 +127,5 @@ function clearAllEntities() {
 module.exports = {
     getAllWorldData,
     saveEntity,
-    deleteEntity,
-    getEntity,
     clearAllEntities
 };

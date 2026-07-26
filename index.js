@@ -20,8 +20,6 @@ const { rememberAiInsight, getRollingSummary, updateRollingSummary } = require('
 const { buildPrompt, callModel, generateNextEvent, generateCampaignSeed } = require('./src/ai/ai_provider');
 const { startWebEditor } = require('./src/web/web_editor');
 const {
-    loadSessionNotes,
-    findTriggeredNotes,
     isSessionZeroActive,
     addSessionZeroInput,
     endSessionZero
@@ -56,7 +54,6 @@ const client = new Client({
 let worldContext = null;
 let ownerUserId = process.env.BOT_OWNER_ID || null;
 const TEMP_DATA_DIR = path.join(__dirname, 'temp_data');
-const SESSION_REMINDERS_PATH = path.join(TEMP_DATA_DIR, 'session_reminders.json');
 let transcriptCounter = 0;
 
 let stats = {
@@ -81,11 +78,6 @@ function saveLlmDebug(debugInfo) {
     } catch (e) {
         console.warn('-> Failed to save LLM debug info:', e.message);
     }
-}
-
-function saveSessionReminders(reminders) {
-    fs.mkdirSync(TEMP_DATA_DIR, { recursive: true });
-    fs.writeFileSync(SESSION_REMINDERS_PATH, JSON.stringify(reminders, null, 2), 'utf8');
 }
 
 // Deterministic backstop for check announcements: the prompt asks the model to state the skill
@@ -552,14 +544,6 @@ client.on('messageCreate', async (message) => {
                 if (isSessionZeroActive()) {
                     handleSessionZeroInput(sourceLabel, transcript);
                 } else if (worldContext) {
-                    const sessionNotes = loadSessionNotes();
-                    const triggered = findTriggeredNotes(sessionNotes, transcript);
-                    saveSessionReminders(triggered);
-                    if (triggered.length > 0) {
-                        const dmBody = triggered.map((note) => `Trigger: ${note.trigger}\nNote: ${note.note}`).join('\n\n');
-                        console.log('-> Triggered session notes:', dmBody);
-                    }
-
                     runDmTurn(transcript);
                 }
             });

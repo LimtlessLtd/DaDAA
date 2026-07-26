@@ -5,7 +5,6 @@ const http = require('http');
 const { getAllWorldData, saveEntity } = require('../data/data_manager');
 
 const dataDir = path.join(__dirname, '..', '..', 'temp_data');
-const relationshipsPath = path.join(dataDir, 'relationships.json');
 const transcriptLogPath = path.join(dataDir, 'transcript_log.txt');
 const sessionStatePath = path.join(dataDir, 'session_state.json');
 
@@ -51,15 +50,6 @@ function stripHtml(html = '') {
 
 function extractDescription(record) {
     if (!record) return '';
-    if (Array.isArray(record.pages)) {
-        const pageTexts = record.pages
-            .map(p => stripHtml(p.text?.content || p.system?.description?.value || ''))
-            .filter(Boolean);
-        if (pageTexts.length > 0) return pageTexts.join('\n');
-    }
-    if (record.system?.description?.value) return stripHtml(record.system.description.value);
-    if (record.system?.details?.biography?.value) return stripHtml(record.system.details.biography.value);
-    if (record.system?.details?.publicNotes) return stripHtml(record.system.details.publicNotes);
     if (record.description) return stripHtml(record.description);
     if (record.content) return stripHtml(record.content);
     if (record.text) return stripHtml(record.text);
@@ -206,31 +196,6 @@ function resetWorldCache() {
     exactNameCache.clear();
 }
 
-async function resolveRecordReference(input) {
-    if (!input) return null;
-
-    if (worldDbCache.has(input)) return worldDbCache.get(input);
-
-    const normalized = normalizeText(input);
-    if (exactNameCache.has(normalized)) return worldDbCache.get(exactNameCache.get(normalized));
-
-    try {
-        const response = await callRagServer('/query', {
-            collection: 'dnd_knowledge',
-            query_texts: [input],
-            n_results: 1
-        });
-        
-        if (response.results?.ids?.[0]?.length > 0) {
-            const matchedId = response.results.ids[0][0];
-            return worldDbCache.get(matchedId) || null;
-        }
-    } catch (e) {
-        console.warn('-> RAG resolve reference failed:', e.message);
-    }
-    return null;
-}
-
 async function findRelevantRecords(text) {
     if (!text || text.trim().length === 0) return [];
     
@@ -256,66 +221,6 @@ async function findRelevantRecords(text) {
         console.warn('-> RAG query failed:', e.message);
     }
     return [];
-}
-
-function loadRelationships() {
-    ensureDataDirectories();
-    if (!fs.existsSync(relationshipsPath)) return [];
-    try {
-        return JSON.parse(fs.readFileSync(relationshipsPath, 'utf8'));
-    } catch (error) {
-        return [];
-    }
-}
-
-function saveRelationships(relationships) {
-    ensureDataDirectories();
-    fs.writeFileSync(relationshipsPath, JSON.stringify(relationships, null, 2));
-}
-
-function addRelationship(relationships, sourceLabel, targetLabel, type = 'related', sourceId = null, targetId = null) {
-    const existing = relationships.find((entry) =>
-        entry.source === sourceLabel && entry.target === targetLabel && entry.type === type
-    );
-    if (existing) return existing;
-
-    const entry = {
-        id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
-        source: sourceLabel,
-        target: targetLabel,
-        sourceId: sourceId || null,
-        targetId: targetId || null,
-        type,
-        createdAt: new Date().toISOString(),
-    };
-
-    relationships.push(entry);
-    saveRelationships(relationships);
-    return entry;
-}
-
-function migrateRelationships() {
-    const relationships = loadRelationships();
-    let changed = false;
-
-    for (const entry of relationships) {
-        if ((!entry.sourceId || !entry.targetId) && entry.source && entry.target) {
-            const sId = exactNameCache.get(normalizeText(entry.source)) || null;
-            const tId = exactNameCache.get(normalizeText(entry.target)) || null;
-
-            if (sId && !entry.sourceId) {
-                entry.sourceId = sId;
-                changed = true;
-            }
-            if (tId && !entry.targetId) {
-                entry.targetId = tId;
-                changed = true;
-            }
-        }
-    }
-
-    if (changed) saveRelationships(relationships);
-    return { relationships, migrated: changed };
 }
 
 function appendTranscript(text, source = 'discord', customTimestamp = null) {
@@ -403,21 +308,6 @@ function readTranscriptLog() {
     }
 }
 
-async function buildDmSuggestion(transcript, relationships) {
-    const sessionState = loadSessionState();
-    
-    const relevant = await findRelevantRecords(transcript);
-    const contextSummary = relevant.length > 0
-        ? relevant.map((record) => `${record.category}: ${record.name}`).join(' | ')
-        : 'No obvious local world references were found.';
-
-    const recentLinks = (relationships || []).slice(-3).map((entry) => `${entry.source} → ${entry.target} (${entry.type})`);
-    const linkSummary = recentLinks.length > 0 ? `Recent links: ${recentLinks.join('; ')}` : 'No saved relationships yet.';
-    const sessionSummary = `Active Scene: ${sessionState.activeScene || 'Unknown'} | NPCs: ${sessionState.activeNpcs.join(', ') || 'None'}`;
-
-    return `DM cue: ${transcript}\nSession State: ${sessionSummary}\nContext: ${contextSummary}\n${linkSummary}`;
-}
-
 async function initializeWorldContext() {
     const worldData = await getAllWorldData();
 
@@ -428,49 +318,14 @@ async function initializeWorldContext() {
 
     await syncKnowledgeToRAG(worldData);
 
-    let relationships = loadRelationships();
-    if (!Array.isArray(relationships)) relationships = [];
-
-    try {
-        const mig = migrateRelationships();
-        relationships = mig.relationships;
-        if (mig.migrated) console.log('-> Migrated relationships to include ids');
-    } catch (e) {}
-
-    if (relationships.length > 0 && worldDbCache.size > 0) {
-        const cleaned = relationships.filter((r) => {
-            try {
-                if (r.sourceId && r.targetId) {
-                    return worldDbCache.has(r.sourceId) && worldDbCache.has(r.targetId);
-                }
-                return true;
-            } catch (e) {
-                return false;
-            }
-        });
-
-        if (cleaned.length !== relationships.length) {
-            const removed = relationships.length - cleaned.length;
-            relationships = cleaned;
-            saveRelationships(relationships);
-            console.log(`-> Removed ${removed} stale relationships`);
-        }
-    }
-
-    return { worldData, relationships, sessionState: loadSessionState() };
+    return { worldData, sessionState: loadSessionState() };
 }
 
 module.exports = {
-    addRelationship,
     appendTranscript,
-    buildDmSuggestion,
     findRelevantRecords,
     initializeWorldContext,
-    loadRelationships,
     readTranscriptLog,
-    resolveRecordReference,
-    saveRelationships,
-    migrateRelationships,
     loadSessionState,
     saveSessionState,
     stripHtml,

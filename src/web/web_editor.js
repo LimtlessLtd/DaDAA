@@ -7,17 +7,13 @@ const { exec } = require('child_process');
 const { getAllWorldData, clearAllEntities } = require('../data/data_manager');
 const {
     callRagServer,
-    loadRelationships,
-    saveRelationships,
-    addRelationship,
     initializeWorldContext,
-    migrateRelationships,
     loadSessionState,
     saveSessionState,
     readTranscriptLog,
     resetWorldCache
 } = require('../ai/context_manager');
-const { loadSessionNotes, saveSessionNotes, addSessionNote, deleteSessionNote, startSessionZero } = require('../sessions/session_manager');
+const { startSessionZero } = require('../sessions/session_manager');
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('../characters/character_manager');
 const { getRollingSummary } = require('../ai/ai_helper');
 const { generateNextEvent } = require('../ai/ai_provider');
@@ -26,48 +22,6 @@ const { stopSpeaking } = require('../voice/voice_manager');
 const UI_ROOT = path.join(__dirname, '..', '..', 'UI');
 const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
 const PORT = Number(process.env.DA_DAA_PORT || 8000);
-
-
-async function searchRecords(query = '', categoryFilter = null) {
-    const normalized = String(query).trim().toLowerCase();
-    
-    if (!normalized) {
-        return [];
-    }
-
-    try {
-        const response = await callRagServer('/query', {
-            collection: 'dnd_knowledge',
-            query_texts: [normalized],
-            n_results: 80
-        });
-
-        if (response.results && response.results.ids && response.results.ids[0]) {
-            const ids = response.results.ids[0];
-            const metas = response.results.metadatas[0];
-
-            let results = ids.map((id, index) => {
-                const meta = metas[index] || {};
-                return {
-                    id: id,
-                    label: `${meta.category || 'unknown'}: ${meta.name || 'Unnamed'}`,
-                    category: meta.category,
-                    name: meta.name || id
-                };
-            });
-
-            if (categoryFilter) {
-                results = results.filter(r => String(r.category) === String(categoryFilter));
-            }
-
-            return results;
-        }
-    } catch (e) {
-        console.warn('-> Web Editor Search failed:', e.message);
-    }
-    
-    return [];
-}
 
 function readJsonBody(req) {
     return new Promise((resolve, reject) => {
@@ -127,7 +81,7 @@ function startWebEditor() {
     const server = http.createServer(async (req, res) => {
             const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
             const pathname = String(url.pathname || '').replace(/\/$/, '');
-            
+
 
         if (pathname === '/api/session_state') {
             if (req.method === 'GET') {
@@ -171,9 +125,6 @@ function startWebEditor() {
 
                     // 3. Reset physical files on disk (the "purge" logic)
                     const filesToReset = {
-                        'relationships.json': '[]',
-                        'session_notes.json': '[]',
-                        'session_reminders.json': '[]',
                         'session_state.json': '{"activeScene": null, "activeNpcs": [], "activeQuests": []}',
                         'current_event.json': '{"activeEvent": null, "archivedEvents": []}',
                         'ai_memory.json': '{"summaries": []}',
@@ -241,180 +192,13 @@ function startWebEditor() {
             return;
         }
 
-        if (pathname === '/api/purge') {
-            if (req.method === 'POST') {
-                try {
-                    const payload = await readJsonBody(req);
-                    if (payload.confirm !== 'PURGE') {
-                        sendJson(res, 400, { error: 'Confirmation key "PURGE" is required.' });
-                        return;
-                    }
-
-                    const filesToReset = {
-                        'relationships.json': '[]',
-                        'session_notes.json': '[]',
-                        'session_reminders.json': '[]',
-                        'session_state.json': '{"activeScene": null, "activeNpcs": [], "activeQuests": []}',
-                        'ai_memory.json': '{"summaries": []}',
-                        'transcript_log.txt': ''
-                    };
-
-                    Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
-                        const filePath = path.join(TEMP_DATA_ROOT, filename);
-                        try {
-                            fs.writeFileSync(filePath, defaultValue, 'utf8');
-                        } catch (e) {
-                            console.warn(`-> Failed to reset ${filename}:`, e.message);
-                        }
-                    });
-
-                    await callRagServer('/clear', { collection: 'dnd_transcripts' }).catch(() => {});
-
-                    console.log('-> Local campaign session data has been purged successfully.');
-                    sendJson(res, 200, { ok: true, message: 'All local session data has been purged.' });
-                } catch (error) {
-                    sendJson(res, 500, { error: error.message });
-                }
-                return;
-            }
-        }
-
-
-        if (pathname === '/api/records') {
-            try {
-                const query = url.searchParams.get('query') || '';
-                const category = url.searchParams.get('category') || null;
-                const results = await searchRecords(query, category);
-                sendJson(res, 200, results);
-            } catch (error) {
-                sendJson(res, 500, { error: error.message });
-            }
-            return;
-        }
-
-
-        if (pathname === '/api/categories') {
-            try {
-                const catsPath = path.join(TEMP_DATA_ROOT, 'categories.json');
-                if (fs.existsSync(catsPath)) {
-                    sendJson(res, 200, JSON.parse(fs.readFileSync(catsPath, 'utf8')));
-                } else {
-                    sendJson(res, 200, []);
-                }
-            } catch (e) {
-                sendJson(res, 500, { error: e.message });
-            }
-            return;
-        }
-
-
-        if (pathname === '/api/record') {
-            try {
-                const id = url.searchParams.get('id');
-                if (!id) {
-                    sendJson(res, 400, { error: 'id required' });
-                    return;
-                }
-                
-                const worldData = await getAllWorldData();
-                let foundRecord = null;
-                Object.values(worldData).forEach(categoryArray => {
-                    if (foundRecord) return;
-                    const match = categoryArray.find(r => r._id === id);
-                    if (match) foundRecord = match;
-                });
-
-                if (!foundRecord) {
-                    sendJson(res, 404, { error: 'record not found' });
-                    return;
-                }
-                sendJson(res, 200, foundRecord);
-            } catch (error) {
-                sendJson(res, 500, { error: error.message });
-            }
-            return;
-        }
-
-        if (url.pathname === '/api/relationships') {
-            if (req.method === 'GET') {
-                sendJson(res, 200, loadRelationships());
-                return;
-            }
-
-            if (req.method === 'POST') {
-                try {
-                    const payload = await readJsonBody(req);
-                    const relationships = loadRelationships();
-                    const entry = addRelationship(
-                        relationships,
-                        payload.source,
-                        payload.target,
-                        payload.type || 'related',
-                        payload.sourceId || null,
-                        payload.targetId || null
-                    );
-                    sendJson(res, 200, entry);
-                } catch (error) {
-                    sendJson(res, 400, { error: error.message });
-                }
-                return;
-            }
-        }
-
         if (url.pathname === '/api/refresh') {
             if (req.method === 'POST') {
                 try {
-                    const { relationships } = await initializeWorldContext();
-                    const mig = migrateRelationships();
-                    sendJson(res, 200, { ok: true, relationships: relationships.length, migrated: mig.migrated });
+                    await initializeWorldContext();
+                    sendJson(res, 200, { ok: true });
                 } catch (e) {
                     sendJson(res, 500, { error: e.message });
-                }
-                return;
-            }
-        }
-
-        if (pathname === '/api/session_notes') {
-            if (req.method === 'GET') {
-                sendJson(res, 200, loadSessionNotes());
-                return;
-            }
-
-            if (req.method === 'POST') {
-                try {
-                    const payload = await readJsonBody(req);
-                    const notes = loadSessionNotes();
-                    const entry = addSessionNote(notes, payload);
-                    sendJson(res, 200, entry);
-                } catch (err) {
-                    sendJson(res, 400, { error: err.message });
-                }
-                return;
-            }
-        }
-
-        if (pathname.startsWith('/api/session_notes/')) {
-            if (req.method === 'DELETE') {
-                const id = pathname.split('/').pop();
-                const notes = loadSessionNotes();
-                const next = deleteSessionNote(notes, id);
-                sendJson(res, 200, next);
-                return;
-            }
-        }
-
-        if (pathname === '/api/session_reminders') {
-            if (req.method === 'GET') {
-                const remindersPath = path.join(TEMP_DATA_ROOT, 'session_reminders.json');
-                if (fs.existsSync(remindersPath)) {
-                    try {
-                        const data = JSON.parse(fs.readFileSync(remindersPath, 'utf8'));
-                        sendJson(res, 200, data);
-                    } catch (error) {
-                        sendJson(res, 500, { error: error.message });
-                    }
-                } else {
-                    sendJson(res, 200, []);
                 }
                 return;
             }
@@ -433,21 +217,6 @@ function startWebEditor() {
             }
         }
 
-        if (url.pathname.startsWith('/api/relationships/')) {
-            const id = url.pathname.split('/').pop();
-            if (req.method === 'DELETE') {
-                const relationships = loadRelationships();
-                const nextRelationships = relationships.filter((entry) => entry.id !== id);
-                if (nextRelationships.length !== relationships.length) {
-                    saveRelationships(nextRelationships);
-                    sendJson(res, 200, { ok: true });
-                } else {
-                    sendJson(res, 404, { error: 'Relationship not found' });
-                }
-                return;
-            }
-        }
-
         if (pathname === '/api/discord_users') {
             if (req.method === 'GET') {
                 sendJson(res, 200, loadSeenDiscordUsers());
@@ -458,11 +227,11 @@ function startWebEditor() {
         if (pathname === '/api/entities') {
             if (req.method === 'GET') {
                 const worldData = await getAllWorldData();
-        
+
                 const allCharacters = (worldData.characters || []).map(c => c.name).filter(Boolean);
-        
+
                 const allLocations = (worldData.locations || []).map(l => l.name).filter(Boolean);
-        
+
                 const allItems = (worldData.items || []).map(i => i.name).filter(Boolean);
 
                 sendJson(res, 200, {
@@ -478,7 +247,7 @@ function startWebEditor() {
             if (req.method === 'POST') {
                 try {
                     const rollingSummary = getRollingSummary();
-                    
+
                     let currentEventData = { activeEvent: null, archivedEvents: [] };
                     const eventPath = path.join(TEMP_DATA_ROOT, 'current_event.json');
                     if (fs.existsSync(eventPath)) {
@@ -488,7 +257,7 @@ function startWebEditor() {
                     }
 
                     const newEventObj = await generateNextEvent(currentEventData.archivedEvents, rollingSummary, "Manually generated event by DM");
-                    
+
                     if (newEventObj && newEventObj.activeEvent) {
                         currentEventData.activeEvent = newEventObj.activeEvent;
                         fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
@@ -576,13 +345,13 @@ function startWebEditor() {
         if (pathname === '/api/shutdown') {
             if (req.method === 'POST') {
                 console.log('-> Manual shutdown triggered. Detecting OS for cleanup...');
-                
+
                 // Check if we are on Windows or Linux
                 const isWindows = os.platform() === 'win32';
-                
+
                 // Define command based on OS
-                const killCmd = isWindows 
-                    ? 'taskkill /F /IM python.exe /T && taskkill /F /IM node.exe /T' 
+                const killCmd = isWindows
+                    ? 'taskkill /F /IM python.exe /T && taskkill /F /IM node.exe /T'
                     : 'pkill -f python3 && pkill -f node';
 
                 exec(killCmd, (err) => {
