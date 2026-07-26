@@ -3,7 +3,8 @@
   "OllamaConfig": {
     "enabled": true,
     "baseUrl": "http://localhost:11434",
-    "model": "qwen3.5"
+    "model": "qwen3.5",
+    "numCtx": 32768
   },
   "DiceMaidenTag": "Dice Maiden#9678"
 }

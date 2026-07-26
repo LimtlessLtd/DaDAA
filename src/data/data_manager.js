@@ -1,9 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 
+// Note: this is called both once at startup AND on every dashboard poll (web_editor.js's
+// /api/world_entities etc. call it every few seconds) - don't log per-call here, it floods the
+// console. The one legitimate startup log line lives at the call site in
+// context_manager.js initializeWorldContext(), the only caller that represents an actual
+// "loading/refreshing the world" moment rather than a routine dashboard read.
 async function getAllWorldData() {
-    console.log("--- DaDAA: Loading Game Data ---");
-    
     const worldData = {
         characters: [],
         npcs: [],
@@ -14,12 +17,11 @@ async function getAllWorldData() {
         encounters: [],
         sessions: []
     };
-    
+
     const tempDataPath = path.join(__dirname, '..', '..', 'temp_data');
-    
+
     if (!fs.existsSync(tempDataPath)) {
         fs.mkdirSync(tempDataPath, { recursive: true });
-        console.log("-> Created temp_data directory");
         return worldData;
     }
     
@@ -63,18 +65,15 @@ async function getAllWorldData() {
                 
                 if (records.length > 0) {
                     worldData[key] = records;
-                    console.log(`-> Loaded ${records.length} ${key}`);
                 }
             } catch (e) {
                 console.warn(`-> Failed to read ${dir} directory:`, e.message);
             }
         } else {
             fs.mkdirSync(folderPath, { recursive: true });
-            console.log(`-> Created ${dir} directory`);
         }
     }
-    
-    console.log("--- DaDAA: Data Loading Complete ---");
+
     return worldData;
 }
 

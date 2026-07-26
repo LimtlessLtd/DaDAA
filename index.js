@@ -74,24 +74,6 @@ const activeSpeakers = new Set();
 
 const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
 
-function normalizeResponse(aiReply) {
-    if (typeof aiReply !== 'object' || aiReply === null) {
-        return { suggestion: String(aiReply || ''), spokenNarrative: '' };
-    }
-    const sanitize = (val) => {
-        if (typeof val === 'object' && val !== null) {
-            return val.text || val.message || JSON.stringify(val);
-        }
-        return String(val || '');
-    };
-    
-    return {
-        ...aiReply,
-        suggestion: sanitize(aiReply.suggestion),
-        spokenNarrative: sanitize(aiReply.spokenNarrative)
-    };
-}
-
 function saveLlmDebug(debugInfo) {
     try {
         fs.mkdirSync(TEMP_DATA_DIR, { recursive: true });
@@ -107,9 +89,9 @@ function saveSessionReminders(reminders) {
 }
 
 // Deterministic backstop for check announcements: the prompt asks the model to state the skill
-// and DC out loud in spokenNarrative (ai_provider.js guideline 6), but it doesn't always comply,
-// leaving players unsure what they're rolling for. This runs unconditionally whenever a check is
-// registered, so the requirement is always announced regardless of what the narrative said.
+// and DC out loud in a dialogue segment (ai_provider.js guideline 6), but it doesn't always
+// comply, leaving players unsure what they're rolling for. This runs unconditionally whenever a
+// check is registered, so the requirement is always announced regardless of what was narrated.
 function announceCheckRequirement(character, skill, dc) {
     const announcement = `${character}, make a ${skill} check - you need to beat a DC of ${dc}.`;
     console.log(`-> TTS Queueing (check announcement): "${announcement}"`);
@@ -176,10 +158,14 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
         if (aiReply) {
             console.log('-> AI evaluation:', JSON.stringify(aiReply));
 
-            if (aiReply.spokenNarrative) {
-                console.log(`-> TTS Queueing: "${aiReply.spokenNarrative}" [Voice: ${aiReply.voiceProfile || 'narrator'}]`);
-                speakText(aiReply.spokenNarrative, aiReply.voiceProfile);
-                appendTranscript(aiReply.spokenNarrative, `Dungeon Master (${aiReply.voiceProfile || 'narrator'})`, Date.now());
+            if (aiReply.dialogue && Array.isArray(aiReply.dialogue)) {
+                for (const segment of aiReply.dialogue) {
+                    if (!segment || !segment.text) continue;
+                    const speaker = segment.speaker || 'narrator';
+                    console.log(`-> TTS Queueing: "${segment.text}" [Speaker: ${speaker}]`);
+                    speakText(segment.text, speaker, segment.voiceDescription);
+                    appendTranscript(segment.text, `Dungeon Master (${speaker})`, Date.now());
+                }
             }
 
             const isImportantInsight = aiReply.suggestion && !aiReply.isOOC && aiReply.isImportant;

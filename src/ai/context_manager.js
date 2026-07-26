@@ -420,7 +420,12 @@ async function buildDmSuggestion(transcript, relationships) {
 
 async function initializeWorldContext() {
     const worldData = await getAllWorldData();
-    
+
+    const counts = Object.entries(worldData)
+        .filter(([, records]) => records && records.length > 0)
+        .map(([key, records]) => `${records.length} ${key}`);
+    console.log(`-> Loaded game data: ${counts.length > 0 ? counts.join(', ') : 'no saved data yet'}`);
+
     await syncKnowledgeToRAG(worldData);
 
     let relationships = loadRelationships();

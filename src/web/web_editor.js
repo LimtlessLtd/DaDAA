@@ -173,6 +173,7 @@ function startWebEditor() {
                         'transcript_log.txt': '',
                         'character_map.json': '{}',
                         'character_logs.json': '[]',
+                        'character_voices.json': '{}',
                         'campaign_intro.json': '{"text": null, "generatedAt": null}'
                     };
 
