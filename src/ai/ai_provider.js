@@ -16,7 +16,7 @@ Respond ONLY with a valid JSON object:
     "voiceProfile": "narrator | monster | male | female",
     "isImportant": true/false,
     "isOOC": true/false,
-    "resolutionSummary": "How the event has changed, evolved, escalated, or been resolved.",
+    "resolutionSummary": "Concrete, factual changes to the scene as a direct result of this turn (e.g. 'the crystal was devoured and no longer exists', 'the door is now unlocked', 'the guard is dead'). Fill this in any time something in the scene actually changed, REGARDLESS of eventStatus - not only on escalated/evolved/resolved. Leave blank only if nothing changed.",
     "characterLogs": [ { "character": "Exact character name from the Discord User to Character Map", "log": "A brief, specific description of what happened and why it matters for this character", "type": "plot | trauma | npc | development" } ],
     "worldEntities": [ { "type": "npcs | locations | items | quests | lore | encounters", "name": "The proper name you just invented", "description": "Everything worth remembering about it - appearance, personality, purpose, secrets, relationships - written so it can be read back to you later as ground truth", "secret": true/false } ],
     "checkCharacter": "Exact character name (from the Discord User to Character Map) being asked to roll, or null if no roll is being requested.",
@@ -48,7 +48,9 @@ GUIDELINES:
    - "escalated": Players ignored it, failed, or worsened it (update complication).
    - "evolved": Players altered the situation creatively; parameters changed.
    - "stable": Situation continues as-is.
-13. Enforcing Boundaries: You dictate reality. Deny physically impossible or immersion-breaking actions. Explain the refusal clearly in "spokenNarrative", or use "No, but..." to offer a realistic alternative.
+   Whichever status you pick, if anything in the scene concretely changed this turn (an item was taken, destroyed, or consumed; an NPC died or fled; a door opened; the party moved on), you MUST record that change in "resolutionSummary" - never omit it just because eventStatus is "stable". This is what keeps the event's remembered state accurate instead of reverting on the next turn.
+13. Consistency: The "Current Event" block below may include a "Current State" line describing what changed on earlier turns - it always overrides "Description" wherever the two conflict (e.g. if Current State says an item was destroyed or taken, treat it as gone even though Description still mentions it sitting there). Never re-introduce, undo, or contradict something that was already narrated as changed in a previous turn.
+14. Enforcing Boundaries: You dictate reality. Deny physically impossible or immersion-breaking actions. Explain the refusal clearly in "spokenNarrative", or use "No, but..." to offer a realistic alternative.
 
 Current Event:
 ${currentEventString || 'No active event.'}

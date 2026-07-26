@@ -502,6 +502,10 @@
                 <div style="margin-top: 6px; padding: 6px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b; border-radius: 4px; color: #fcd34d;">
                     <strong>Complication:</strong> ${escapeHtml(ceData.activeEvent.complication || 'None')}
                 </div>
+                ${ceData.activeEvent.currentState ? `
+                <div style="margin-top: 6px; padding: 6px; background: rgba(34, 197, 94, 0.1); border-left: 3px solid #22c55e; border-radius: 4px; color: #86efac;">
+                    <strong>Current State:</strong> ${escapeHtml(ceData.activeEvent.currentState)}
+                </div>` : ''}
              `;
           } else {
              document.getElementById('currentEventDisplay').textContent = 'No active event.';

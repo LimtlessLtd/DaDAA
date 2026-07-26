@@ -106,6 +106,17 @@ function saveSessionReminders(reminders) {
     fs.writeFileSync(SESSION_REMINDERS_PATH, JSON.stringify(reminders, null, 2), 'utf8');
 }
 
+// Deterministic backstop for check announcements: the prompt asks the model to state the skill
+// and DC out loud in spokenNarrative (ai_provider.js guideline 6), but it doesn't always comply,
+// leaving players unsure what they're rolling for. This runs unconditionally whenever a check is
+// registered, so the requirement is always announced regardless of what the narrative said.
+function announceCheckRequirement(character, skill, dc) {
+    const announcement = `${character}, make a ${skill} check - you need to beat a DC of ${dc}.`;
+    console.log(`-> TTS Queueing (check announcement): "${announcement}"`);
+    speakText(announcement, 'narrator');
+    appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+}
+
 // Shared pipeline: build world context, call the LLM, and react to its reply.
 // Used for real transcribed speech, the silence driver's synthetic prompt, and
 // dice-roll resolutions - anywhere a "DM turn" needs to happen.
@@ -122,7 +133,7 @@ async function runDmTurn(transcript) {
         try {
             currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
             if (currentEventData.activeEvent) {
-                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}`;
+                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}\nCurrent State (most recent - overrides Description above wherever they conflict): ${currentEventData.activeEvent.currentState || 'No changes yet - Description above is still accurate.'}`;
             }
         } catch (e) {}
     }
@@ -189,6 +200,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                 const check = addPendingCheck(aiReply.checkCharacter, aiReply.checkSkill, aiReply.checkDc);
                 if (check) {
                     console.log(`-> Pending check registered: ${check.character} - ${check.skill} DC ${check.dc}`);
+                    announceCheckRequirement(check.character, check.skill, check.dc);
                 }
             }
 
@@ -215,14 +227,22 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                             }
                         }).catch(err => console.error('-> Failed to generate new event:', err));
 
-                } else if (status === 'escalated' || status === 'evolved') {
-                    console.log(`-> Event Morphing: Updating stakes/complications.`);
+                } else {
+                    // "stable", "escalated", or "evolved" - the event is still active, but the scene's
+                    // physical state may still have changed this turn (an item taken/destroyed, an NPC
+                    // killed, etc). Persist that regardless of status so the next turn's prompt doesn't
+                    // contradict something that already happened - previously this was only captured on
+                    // escalate/evolve, so "stable" turns silently dropped state changes entirely.
+                    if (aiReply.resolutionSummary) {
+                        currentEventData.activeEvent.currentState = aiReply.resolutionSummary;
+                    }
 
-                    currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
+                    if (status === 'escalated' || status === 'evolved') {
+                        currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
+                        console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${currentEventData.activeEvent.complication}`);
+                    }
 
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-
-                    console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${currentEventData.activeEvent.complication}`);
                 }
             }
 
