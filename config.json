@@ -6,5 +6,8 @@
     "model": "qwen3.5",
     "numCtx": 32768
   },
-  "DiceMaidenTag": "Dice Maiden#9678"
+  "DiceMaidenTag": "Dice Maiden#9678",
+  "ImageGenConfig": {
+    "minIntervalMs": 180000
+  }
 }

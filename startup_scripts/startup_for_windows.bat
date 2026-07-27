@@ -23,6 +23,9 @@ call :CleanupPort 8765 server\core_server.py
 echo Checking for stale core server (RAG + transcription + TTS) on port 8767...
 call :CleanupPort 8767 server\core_server.py
 
+echo Checking for stale core server (image generation) on port 8768...
+call :CleanupPort 8768 server\core_server.py
+
 echo Checking for stale bot server on port 8000...
 call :CleanupPort 8000 index.js
 
@@ -32,6 +35,17 @@ echo Waiting for core server to initialize (loads whisper/sentence-transformers/
 call :WaitForPort 8766 180
 if errorlevel 1 (
     echo WARNING: core server did not come up within 180 seconds - continuing anyway, but TTS/RAG may not be ready yet.
+)
+
+REM Advisory only - image generation (Stable Diffusion) loads last, after RAG/transcription/TTS
+REM are already up and unaffected, so nothing here blocks the rest of startup. A first-run model
+REM download can take several minutes; the bot's image queue already tolerates this port not
+REM being ready yet (a failed request is just logged and retried later), so this is purely to
+REM avoid the console looking "done starting" while a large download is silently still happening.
+echo Waiting for image generation server to initialize (may involve a large one-time model download)...
+call :WaitForPort 8768 600
+if errorlevel 1 (
+    echo NOTE: image generation server is not ready yet - portraits/event images will simply queue until it is.
 )
 
 echo Starting DaDAA Bot...

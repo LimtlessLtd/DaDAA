@@ -14,15 +14,27 @@ const {
     saveSessionState,
     findRelevantRecords,
     addWorldEntities,
-    callRagServer
+    callRagServer,
+    getEntityByName
 } = require('./src/ai/context_manager');
+const {
+    enqueueNpcPortrait,
+    enqueueEventImage,
+    setActiveTextChannel,
+    postToActiveChannel
+} = require('./src/images/image_gen_manager');
+const { getPortrait } = require('./src/images/portrait_registry');
 const { rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai/ai_helper');
-const { buildPrompt, callModel, generateNextEvent, generateCampaignSeed } = require('./src/ai/ai_provider');
+const { buildPrompt, callModel, generateNextEvent, generateCampaignSeed, parseCharacterIntroductions } = require('./src/ai/ai_provider');
 const { startWebEditor } = require('./src/web/web_editor');
 const {
     isSessionZeroActive,
     addSessionZeroInput,
-    endSessionZero
+    endSessionZero,
+    startCharacterIntros,
+    isCharacterIntroActive,
+    addCharacterIntroInput,
+    endCharacterIntros
 } = require('./src/sessions/session_manager');
 const { addPendingCheck, resolvePendingCheck } = require('./src/sessions/check_manager');
 const { isDiceMaidenMessage, parseDiceMaidenRoll, isDiceMaidenError } = require('./src/dice/dice_maiden');
@@ -65,9 +77,72 @@ let stats = {
 
 // --- SILENCE DRIVER VARIABLES ---
 let silenceTimer = null;
-const SILENCE_TIMEOUT_MS = 45000; // 45 seconds of silence before the DM speaks up
+const SILENCE_TIMEOUT_MS = 90000; // 90 seconds of silence before the DM speaks up
 let lastSpeechTimestamp = Date.now();
 const activeSpeakers = new Set();
+
+// runDmTurn has three independent trigger sites (real speech, the silence driver, dice-roll
+// resolution) that used to fire-and-forget straight into runDmTurn - if two triggers landed
+// close together, their LLM calls ran concurrently and whichever HTTP response came back first
+// queued its narration first, regardless of which trigger actually happened first. That produced
+// narration in the wrong order and let a later turn build its prompt from stale session state
+// that an earlier, still-in-flight turn was about to change. Chaining every call onto this promise
+// forces turns to run one at a time, in trigger order.
+let dmTurnQueue = Promise.resolve();
+
+// Bridges handleSessionZeroInput() -> beginSessionOne(): the campaign intro lore is generated
+// and spoken in the former, but generateNextEvent() (called from the latter, once character
+// introductions are done) still needs it as scene-setting context for the opening event.
+let pendingCampaignIntroLore = null;
+
+function enqueueDmTurn(transcript) {
+    dmTurnQueue = dmTurnQueue.then(() => runDmTurn(transcript)).catch((err) => {
+        console.error('-> DM turn failed:', err.message);
+        return null;
+    });
+    return dmTurnQueue;
+}
+
+// Ollama (CPU) + Kokoro synthesis are slow enough that players often repeat themselves while
+// waiting for a reply - but every enqueueDmTurn() call is a full serialized LLM+TTS turn (see
+// above), so 3-4 repeats used to queue up 3-4 slow turns back-to-back, making the wait longer
+// with every repeat instead of shorter. This coalesces a burst of consecutive real-speech
+// utterances (arriving within DM_TURN_DEBOUNCE_MS of each other) into a single turn, and
+// immediately plays a cheap filler line the moment that turn actually commits, so players get
+// audible confirmation they were heard well before the real (slow) reply comes back. Only used
+// for the real-speech trigger site - dice-roll and silence-driver turns are already discrete,
+// one-off events with nothing to coalesce.
+const DM_TURN_DEBOUNCE_MS = 3000;
+const THINKING_FILLERS = [
+    "Mm, one moment.",
+    "Let me think on that.",
+    "Hmm, considering that.",
+    "One moment.",
+    "Let's see."
+];
+let thinkingFillerIndex = 0;
+let pendingTranscriptEntries = [];
+let pendingTranscriptTimer = null;
+
+function queueDmTranscript(source, transcript) {
+    pendingTranscriptEntries.push({ source, text: transcript });
+    if (pendingTranscriptTimer) clearTimeout(pendingTranscriptTimer);
+
+    pendingTranscriptTimer = setTimeout(() => {
+        const entries = pendingTranscriptEntries;
+        pendingTranscriptEntries = [];
+        pendingTranscriptTimer = null;
+
+        const combined = entries.length === 1
+            ? entries[0].text
+            : entries.map((e) => `[${e.source}]: ${e.text}`).join('\n');
+
+        speakText(THINKING_FILLERS[thinkingFillerIndex], 'narrator');
+        thinkingFillerIndex = (thinkingFillerIndex + 1) % THINKING_FILLERS.length;
+
+        enqueueDmTurn(combined);
+    }, DM_TURN_DEBOUNCE_MS);
+}
 
 const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
 
@@ -112,6 +187,17 @@ async function runDmTurn(transcript) {
         } catch (e) {}
     }
 
+    // Read fresh each turn (same pattern as current_event.json above) rather than cached in
+    // memory, so there's no stale-cache class of bug to worry about - this file is small and
+    // only written once per campaign (handleSessionZeroInput), so the read cost is negligible.
+    let narratorPersona = '';
+    const campaignIntroPath = path.join(TEMP_DATA_DIR, 'campaign_intro.json');
+    if (fs.existsSync(campaignIntroPath)) {
+        try {
+            narratorPersona = JSON.parse(fs.readFileSync(campaignIntroPath, 'utf8')).narratorPersona || '';
+        } catch (e) {}
+    }
+
     const contextString = `
 Current Scene: ${sessionState.activeScene || 'Unknown'}
 Active NPCs: ${sessionState.activeNpcs?.join(', ') || 'None'}
@@ -121,7 +207,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
     const rollingSummary = getRollingSummary();
     const characterMapStr = getCharacterMapString();
     const playerLogsStr = getPlayerLogsString();
-    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr);
+    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr, narratorPersona);
 
     const activeModelName = config.OllamaConfig?.enabled
         ? config.OllamaConfig?.model || 'neural-chat'
@@ -157,6 +243,26 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     console.log(`-> TTS Queueing: "${segment.text}" [Speaker: ${speaker}]`);
                     speakText(segment.text, speaker, segment.voiceDescription);
                     appendTranscript(segment.text, `Dungeon Master (${speaker})`, Date.now());
+
+                    if (speaker.trim().toLowerCase() !== 'narrator') {
+                        const portrait = getPortrait(speaker);
+                        if (!portrait) {
+                            // Light retry: this NPC has no portrait yet (rate limit, or this is
+                            // their very first line before addWorldEntity's job even started) -
+                            // re-check their world record and re-enqueue if one exists.
+                            // enqueueNpcPortrait() re-checks getPortrait()/queue membership
+                            // itself, so repeated calls across many lines before the portrait
+                            // completes are harmless.
+                            const entity = getEntityByName(speaker);
+                            if (entity) enqueueNpcPortrait(entity);
+                        }
+                        // Fire-and-forget - posting text-only when no portrait exists yet is the
+                        // expected, correct behavior, not a bug to fix.
+                        postToActiveChannel({
+                            content: `**${speaker}:** ${segment.text}`,
+                            files: portrait ? [{ attachment: path.join(TEMP_DATA_DIR, portrait.path), name: 'portrait.png' }] : []
+                        });
+                    }
                 }
             }
 
@@ -189,6 +295,14 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                 if (status === 'resolved') {
                     console.log(`-> Active Event Resolved: ${currentEventData.activeEvent.title}`);
 
+                    // Snapshot before nulling activeEvent below - the image should reflect how
+                    // this event ended, win or lose, not the event that (already null) replaces it.
+                    const resolvedEventForImage = {
+                        title: currentEventData.activeEvent.title,
+                        description: currentEventData.activeEvent.description,
+                        currentState: aiReply.resolutionSummary || currentEventData.activeEvent.currentState
+                    };
+
                     currentEventData.archivedEvents.push({
                         title: currentEventData.activeEvent.title,
                         resolution: aiReply.resolutionSummary,
@@ -204,6 +318,8 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                                 fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
                             }
                         }).catch(err => console.error('-> Failed to generate new event:', err));
+
+                    enqueueEventImage(resolvedEventForImage);
 
                 } else {
                     // "stable", "escalated", or "evolved" - the event is still active, but the scene's
@@ -221,6 +337,12 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     }
 
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                    // Regenerate the event image on any real change (evolved/escalated), reflecting
+                    // the just-updated currentState - never on "stable" turns, per spec.
+                    if (status === 'escalated' || status === 'evolved') {
+                        enqueueEventImage(currentEventData.activeEvent);
+                    }
                 }
             }
 
@@ -282,9 +404,9 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
 // utterance comes here instead of runDmTurn() - buffered as raw world-building input, not
 // reacted to as in-character speech. When a player signals they're done, this generates the
 // actual campaign (intro lore + public/secret NPCs/locations/lore) from what was said, saves
-// it, reads the introduction aloud, then generates and announces the opening event for
-// Session 1. Triggered by real voice input; started by /api/start_campaign (see
-// web_editor.js), which only wipes old data and kicks off listening.
+// it, reads the introduction aloud, then hands off to the character-introduction phase below
+// (beginSessionOne only runs once THAT finishes). Triggered by real voice input; started by
+// /api/start_campaign (see web_editor.js), which only wipes old data and kicks off listening.
 const SESSION_ZERO_FINISH_REGEX = /(we('re| are) (done|finished|good|set))|(that's (it|all))|(all done)|(generate (it|the world) now)|(let's start)/i;
 
 async function handleSessionZeroInput(sourceLabel, transcript) {
@@ -316,11 +438,13 @@ async function handleSessionZeroInput(sourceLabel, transcript) {
         }).catch(() => {});
 
         // Also kept as a plain file so the dashboard can display it without needing to
-        // query the RAG server.
+        // query the RAG server. narratorPersona rides along here too - runDmTurn() reads it
+        // back out of this same file every turn so the DM's narrative voice stays consistent
+        // for the whole campaign instead of drifting turn to turn.
         try {
             fs.writeFileSync(
                 path.join(TEMP_DATA_DIR, 'campaign_intro.json'),
-                JSON.stringify({ text: seed.introLore, generatedAt: new Date().toISOString() }, null, 2),
+                JSON.stringify({ text: seed.introLore, narratorPersona: seed.narratorPersona || '', generatedAt: new Date().toISOString() }, null, 2),
                 'utf8'
             );
         } catch (e) {
@@ -338,11 +462,69 @@ async function handleSessionZeroInput(sourceLabel, transcript) {
         appendTranscript(seed.introLore, 'Dungeon Master (narrator)', Date.now());
     }
 
+    pendingCampaignIntroLore = seed.introLore || null;
+    startCharacterIntros();
+}
+
+// Runs once, after Session Zero's campaign intro is read aloud and before Session 1's opening
+// event: each player states their name, character, a brief description, and what that character
+// is doing as the scene opens. handleSessionZeroInput() kicks this phase off (via
+// startCharacterIntros()) instead of going straight to the opening event; every transcribed
+// utterance is routed here instead of runDmTurn() while it's active (see the messageCreate
+// handler below), the same way Session Zero itself works.
+async function handleCharacterIntroInput(sourceLabel, transcript) {
+    addCharacterIntroInput(sourceLabel, transcript);
+
+    if (!SESSION_ZERO_FINISH_REGEX.test(transcript)) return;
+
+    await beginSessionOne(endCharacterIntros());
+}
+
+// Parses the compiled character introductions, binds each Discord user to their character
+// (character_manager.js bindCharacter - the same map runDmTurn() reads via
+// getCharacterMapString()/getBoundCharacterName()), logs each character's opening description
+// so it's remembered, then generates and announces Session 1's opening event with those
+// introductions as extra context so it can acknowledge where each character actually is.
+async function beginSessionOne(compiledIntros) {
+    console.log('-> Character introductions complete. Parsing characters...');
+
+    let introResult = null;
+    try {
+        introResult = await parseCharacterIntroductions(compiledIntros);
+    } catch (err) {
+        console.warn('-> Character introduction parsing failed:', err.message);
+    }
+
+    let openingContext = '';
+    if (introResult && Array.isArray(introResult.characters)) {
+        for (const entry of introResult.characters) {
+            const discordUser = String(entry?.discordUser || '').trim();
+            const characterName = String(entry?.characterName || '').trim();
+            if (!discordUser || !characterName) continue;
+
+            bindCharacter(discordUser, characterName);
+
+            const description = String(entry?.description || '').trim();
+            const openingAction = String(entry?.openingAction || '').trim();
+            const logText = [description, openingAction ? `As the scene opens: ${openingAction}` : ''].filter(Boolean).join(' ');
+            if (logText) {
+                addCharacterLogs([{ character: characterName, log: logText, type: 'development' }]);
+            }
+
+            openingContext += `${characterName} (played by ${discordUser}): ${description}${openingAction ? ` As the scene opens, ${openingAction}` : ''}\n`;
+        }
+    }
+
+    if (!openingContext) {
+        console.warn('-> No character introductions were parsed - proceeding to the opening event without them.');
+    }
+
     try {
         const eventObj = await generateNextEvent(
             [],
-            seed.introLore || 'A new campaign has just begun.',
-            'The players have just finished Session Zero and are ready to begin their first scene.'
+            pendingCampaignIntroLore || 'A new campaign has just begun.',
+            'The players have just finished Session Zero and introduced their characters, and are ready to begin their first scene.',
+            openingContext ? `Player Characters and Their Opening Positions:\n${openingContext}` : ''
         );
 
         if (eventObj && eventObj.activeEvent) {
@@ -357,15 +539,17 @@ async function handleSessionZeroInput(sourceLabel, transcript) {
     } catch (err) {
         console.warn('-> Failed to generate opening event:', err.message);
     }
+
+    pendingCampaignIntroLore = null;
 }
 
 async function handleSilenceDriver() {
     console.log('-> Sustained silence detected. Prompting DM AI to drive the narrative...');
 
-    if (isSessionZeroActive()) return;
+    if (isSessionZeroActive() || isCharacterIntroActive()) return;
 
     const fakeTranscript = "(Players are silent and awaiting the Dungeon Master's lead)";
-    await runDmTurn(fakeTranscript);
+    await enqueueDmTurn(fakeTranscript);
 
     if (silenceTimer) clearTimeout(silenceTimer);
     silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
@@ -426,7 +610,7 @@ async function handleDiceMaidenRoll(message) {
     console.log(`-> ${resultLine}`);
     appendTranscript(resultLine, 'Dice', Date.now());
 
-    runDmTurn(`[Dice Roll Result] ${resultLine}`);
+    enqueueDmTurn(`[Dice Roll Result] ${resultLine}`);
 }
 
 client.once('clientReady', () => {
@@ -495,6 +679,11 @@ client.on('messageCreate', async (message) => {
     if (message.content === '!join') {
         const voiceChannel = message.member?.voice?.channel;
         if (voiceChannel) {
+            // No Discord interaction ever triggers a portrait/event-image completion (it happens
+            // on a background timer, long after any incoming message) - image_gen_manager.js
+            // needs a persisted TextChannel reference to post into later, so capture it here the
+            // same way currentVoiceConnection is captured for voice.
+            setActiveTextChannel(message.channel);
             joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript, startTime) => {
                 let sourceLabel = userId;
                 let discordName = userId;
@@ -543,8 +732,10 @@ client.on('messageCreate', async (message) => {
 
                 if (isSessionZeroActive()) {
                     handleSessionZeroInput(sourceLabel, transcript);
+                } else if (isCharacterIntroActive()) {
+                    handleCharacterIntroInput(sourceLabel, transcript);
                 } else if (worldContext) {
-                    runDmTurn(transcript);
+                    queueDmTranscript(sourceLabel, transcript);
                 }
             });
             message.reply('Listening to the channel!');

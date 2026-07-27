@@ -541,7 +541,11 @@
           return;
         }
         const paragraphs = String(data.text).split(/\n+/).filter(Boolean);
-        container.innerHTML = paragraphs.map(p => `<p style="margin: 0 0 8px 0;">${escapeHtml(p)}</p>`).join('');
+        let html = paragraphs.map(p => `<p style="margin: 0 0 8px 0;">${escapeHtml(p)}</p>`).join('');
+        if (data.narratorPersona) {
+          html = `<p style="margin: 0 0 10px 0; padding: 8px 10px; background: rgba(148, 163, 184, 0.08); border-radius: 6px; font-style: italic; color: #94a3b8;"><strong>Narrator Persona:</strong> ${escapeHtml(data.narratorPersona)}</p>` + html;
+        }
+        container.innerHTML = html;
       } catch (e) {
         console.warn('Failed to load campaign intro', e);
       }
@@ -591,12 +595,15 @@
 
           const isCollapsed = collapsedWorldCategories.has(type);
           const cardsHtml = entities.map((e) => `
-            <div class="item">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <strong style="color: #3b82f6;">${escapeHtml(e.name)}</strong>
-                ${e.secret ? '<span class="status-badge" style="background: #7f1d1d; color: #fca5a5; border-color: #991b1b; font-size: 0.65rem;">SECRET</span>' : ''}
+            <div class="item" style="display: flex; gap: 10px; align-items: flex-start;">
+              ${e.portraitUrl ? `<img src="${escapeHtml(e.portraitUrl)}" style="width: 48px; height: 48px; object-fit: cover; border-radius: 6px; flex-shrink: 0;" />` : ''}
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <strong style="color: #3b82f6;">${escapeHtml(e.name)}</strong>
+                  ${e.secret ? '<span class="status-badge" style="background: #7f1d1d; color: #fca5a5; border-color: #991b1b; font-size: 0.65rem;">SECRET</span>' : ''}
+                </div>
+                <div style="color: #cbd5e1; font-size: 0.8rem; margin-top: 4px;">${escapeHtml(e.description)}</div>
               </div>
-              <div style="color: #cbd5e1; font-size: 0.8rem; margin-top: 4px;">${escapeHtml(e.description)}</div>
             </div>
           `).join('');
 

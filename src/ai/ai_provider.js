@@ -3,9 +3,9 @@ const https = require('https');
 const http = require('http');
 const config = require('../../config.json');
 
-function buildPrompt(transcript, context, rollingSummary = '', characterMapString = '', currentEventString = '', playerLogsString = '') {
+function buildPrompt(transcript, context, rollingSummary = '', characterMapString = '', currentEventString = '', playerLogsString = '', narratorPersona = '') {
     return `You are the sole Dungeon Master. You have absolute authority over the world, its rules, and its lore. You do not assist a human DM; you ARE the DM. Keep players immersed, enforce rules, run a consistent world, and decide all NPC actions and environmental outcomes. YOU DO NOT CONTROL PLAYER ACTIONS.
-
+${narratorPersona ? `\nNarrator Persona & Tone for this campaign (stay in this voice every turn, see guideline 14): ${narratorPersona}\n` : ''}
 STRICT OUTPUT FORMAT:
 Respond ONLY with a valid JSON object:
 {
@@ -45,14 +45,15 @@ GUIDELINES:
 8. Brevity: The combined "text" across all "dialogue" segments must total 1-3 sentences. Be cinematic and specific, not a lecture - state what happens and stop. Never re-explain context the players already have, never summarize the scene so far, never monologue.
 9. Character Logs: Log major character developments, traumas, notable NPC encounters, or plot events for specific player characters in "characterLogs". Each entry MUST be an object with exactly these fields: "character" (exact name from the Discord User to Character Map), "log" (a brief, specific description of what happened and why it matters - never empty), and "type" (one of "plot", "trauma", "npc", "development"). Leave the array empty [] if nothing worth remembering occurred. Never emit an entry with a missing or empty "character" or "log".
 10. Inventing the World: There is no pre-written setting beyond what Session Zero and prior play have established - you invent everything else as the players explore. Whenever you introduce a significant NEW named NPC, location, item, quest, or piece of lore for the first time, record it in "worldEntities" so it is remembered in future sessions instead of being forgotten or contradicted later. Before inventing something, check the World Context and Records below - if it already exists, use it as-is and do NOT re-record it. Write "description" as the actual reference fact (not a narration of this moment) - it is what future-you will read to stay consistent, so include anything a consistent DM would need to know later (appearance, motives, secrets, relationships to other established people/places). Set "secret" to true for anything the players have not learned yet (a hidden motive, an undiscovered place, a truth you're saving for a twist) and false for anything already public knowledge in the fiction. Leave "worldEntities" empty [] when nothing new was introduced. If a Record below is marked "[SECRET]", it is background knowledge for your consistency only - use it to inform NPC behavior and foreshadowing, but NEVER state it directly to players; only let it surface through play (investigation, a dramatic reveal, a plot twist) when it is earned.
-11. Current Event Tracking: Evaluate the immediate obstacle. Do not look for binary checklists; assess creative problem-solving. Return an "eventStatus":
-   - "resolved": Threat/problem is neutralized.
-   - "escalated": Players ignored it, failed, or worsened it (update complication).
-   - "evolved": Players altered the situation creatively; parameters changed.
-   - "stable": Situation continues as-is.
+11. Current Event Tracking: Evaluate the immediate obstacle based on what the players actually attempted, not a generic default. A diplomatic, creative, or non-combat approach (negotiating, bribing, bluffing, sneaking, appealing to an NPC's motives, etc.) is a legitimate way to engage the obstacle, not a failure - react to its specific content through the NPC's actual response in "dialogue" (accept, refuse, counter-offer, demand something first, stall for time), never with a generic "things get worse" beat that ignores what was actually said or offered. Do not look for binary checklists; assess creative problem-solving. Return an "eventStatus":
+   - "resolved": Threat/problem is neutralized - including by negotiation or agreement, not only by combat or an obstacle physically overcome.
+   - "escalated": Players ignored the obstacle entirely, their action genuinely backfired, or a consequence they were already warned about actually followed through. Do NOT pick this just because an attempt - diplomatic or otherwise - hasn't fully succeeded yet: an offer still being weighed, a bluff not yet called, is "stable" or "evolved", never "escalated" by default.
+   - "evolved": Players altered the situation creatively; parameters changed (e.g. a negotiation is now underway, new terms are on the table, the obstacle shifted shape).
+   - "stable": Situation continues as-is, including "an offer was made and is awaiting a response".
    Whichever status you pick, if anything in the scene concretely changed this turn (an item was taken, destroyed, or consumed; an NPC died or fled; a door opened; the party moved on), you MUST record that change in "resolutionSummary" - never omit it just because eventStatus is "stable". This is what keeps the event's remembered state accurate instead of reverting on the next turn.
 12. Consistency: The "Current Event" block below may include a "Current State" line describing what changed on earlier turns - it always overrides "Description" wherever the two conflict (e.g. if Current State says an item was destroyed or taken, treat it as gone even though Description still mentions it sitting there). Never re-introduce, undo, or contradict something that was already narrated as changed in a previous turn.
 13. Enforcing Boundaries: You dictate reality. Deny physically impossible or immersion-breaking actions. Explain the refusal clearly in "dialogue", or use "No, but..." to offer a realistic alternative.
+14. Persona, Tone & Pacing: If a "Narrator Persona & Tone" is given above, narrate consistently in that voice every single turn - don't drift into a generic, neutral fantasy-narrator tone just because this is one isolated call with no memory of earlier turns. Vary pacing deliberately: not every turn needs rising tension or a dramatic beat - let quiet, atmospheric, or character-driven moments breathe when nothing urgent is happening, and save your most intense prose for genuine turning points so they still land.
 
 Current Event:
 ${currentEventString || 'No active event.'}
@@ -343,10 +344,10 @@ function requestJson(url, headers, body) {
     });
 }
 
-function generateNextEvent(archivedEvents, rollingSummary, lastResolution) {
+function generateNextEvent(archivedEvents, rollingSummary, lastResolution, extraContext = '') {
     const recentEvents = Array.isArray(archivedEvents) ? archivedEvents.slice(-5) : [];
 
-    const prompt = `You are an expert Dungeon Master. The players have just resolved the previous event, and you need to generate the NEXT immediate event, obstacle, puzzle, or scene they face. Be creative and think outside the box. 
+    const prompt = `You are an expert Dungeon Master. The players have just resolved the previous event, and you need to generate the NEXT immediate event, obstacle, puzzle, or scene they face. Be creative and think outside the box.
 
 Rolling Summary of Session:
 ${rollingSummary || 'No major events recorded.'}
@@ -356,7 +357,7 @@ ${JSON.stringify(recentEvents, null, 2)}
 
 How they resolved the last event:
 ${lastResolution || 'N/A'}
-
+${extraContext ? `\n${extraContext.trim()}\n` : ''}
 Based on their actions and the current narrative, generate the new Active Event. Ensure you focus on STAKES (what happens if they do nothing) and COMPLICATIONS (what pushes back against them).
 Respond ONLY with a JSON object in this exact format. Do not use markdown backticks:
 {
@@ -400,6 +401,7 @@ ${ideasSection}
 Respond ONLY with a valid JSON object in this exact format. Do not use markdown backticks:
 {
   "introLore": "3 to 4 paragraphs, written to be read aloud to players at the very start of the campaign: the tone, the world, where the party begins, and an immediate hook that gives them a reason to act. Build on the players' ideas above. PUBLIC information only - do not reference anything secret here.",
+  "narratorPersona": "2-3 sentences defining THIS campaign's narrative voice for every future turn: tone (e.g. grim and atmospheric, whimsical and light-hearted, heroic, horror, dry comedic), pacing tendencies, and any recurring stylistic flourish. Infer it from the players' ideas and the introLore you just wrote; if they gave no strong tonal signal, invent something fitting and specific rather than a generic 'epic fantasy' description.",
   "worldEntities": [
     { "type": "locations | npcs | items | quests | lore | encounters", "name": "Proper name", "description": "Everything worth remembering about it, written as a reference fact for a future DM to stay consistent - not a narration.", "secret": true or false }
   ]
@@ -446,6 +448,65 @@ function fallbackToCloudProvidersForCampaignSeed(prompt) {
             return normaliseJson(res);
         } catch (e) {
             console.error(`Failed to parse campaign seed JSON from ${selected.provider}:`, e);
+            return null;
+        }
+    });
+}
+
+// One-shot "who's playing what" call - triggered once players finish introducing themselves
+// and their characters, between the campaign intro and Session 1's opening event (see
+// index.js handleCharacterIntroInput/beginSessionOne). Not part of the regular per-turn DM
+// pipeline. Returns { characters: [{ discordUser, characterName, description, openingAction }] }
+// or null.
+function parseCharacterIntroductions(compiledIntros = '') {
+    const prompt = `You are extracting structured character information from a transcript of players introducing themselves at the start of a tabletop RPG session. Each line is tagged with the Discord username who said it, e.g. "[SomeUser]: ...".
+
+Transcript:
+"""
+${compiledIntros.trim() || 'No introductions were heard.'}
+"""
+
+For each distinct Discord username who introduced a character, produce one entry - if a username speaks multiple times, combine everything they said into a single entry for them. Ignore lines that are not an introduction (off-topic chatter, the DM's own prompt, etc).
+
+Respond ONLY with a valid JSON object in this exact format. Do not use markdown backticks:
+{
+  "characters": [
+    { "discordUser": "The exact Discord username tag from the transcript", "characterName": "The character's name as stated", "description": "A brief description of the character - appearance, personality, class/role - as stated or reasonably inferred", "openingAction": "What they said they're doing as the scene opens, or a short reasonable default if not stated" }
+  ]
+}`;
+
+    if (config.OllamaConfig?.enabled) {
+        return callOllama(prompt).then(res => {
+            try {
+                return parseJsonLoose(res);
+            } catch (e) {
+                console.warn('-> Ollama character-intro parsing failed, falling back to cloud providers:', e.message);
+                return fallbackToCloudProvidersForCharacterIntros(prompt);
+            }
+        }).catch(error => {
+            console.warn('-> Ollama call failed for character-intro parsing, falling back to cloud providers:', error.message);
+            return fallbackToCloudProvidersForCharacterIntros(prompt);
+        });
+    }
+
+    return fallbackToCloudProvidersForCharacterIntros(prompt);
+}
+
+function fallbackToCloudProvidersForCharacterIntros(prompt) {
+    const selected = selectCloudProvider();
+    if (!selected) {
+        console.warn('-> AI Provider: No valid cloud API keys found for character-intro parsing');
+        return Promise.resolve(null);
+    }
+
+    console.log(`-> Using ${selected.provider} as LLM provider for character-intro parsing`);
+
+    return callCloudProvider(selected.provider, selected.apiKey, prompt).then(res => {
+        if (!res) return null;
+        try {
+            return parseJsonLoose(res);
+        } catch (e) {
+            console.error(`Failed to parse character-intro JSON from ${selected.provider}:`, e);
             return null;
         }
     });
@@ -527,4 +588,4 @@ function flatten(obj, result = {}) {
     return result;
 }
 
-module.exports = { buildPrompt, callModel, generateNextEvent, generateCampaignSeed };
+module.exports = { buildPrompt, callModel, generateNextEvent, generateCampaignSeed, parseCharacterIntroductions };

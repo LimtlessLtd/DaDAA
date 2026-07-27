@@ -11,12 +11,15 @@ class TtsService:
     synthesizes whatever [{"name", "weight"}] blend + speed it's given."""
 
     # The complete voice pool used anywhere in this project (see MALE_VOICES/FEMALE_VOICES/
-    # NARRATOR_VOICE in src/voice/voice_registry.js) - every dynamic character voice is a blend
-    # of two of these four, so there is no fifth voice any request could ever ask for. Pre-loaded
-    # at startup so the first real synthesis request (whichever voice it needs) never has to
-    # pay for an on-demand Hugging Face download mid-request - that download is what caused the
-    # first-ever TTS call after a fresh install to blow past the client's request timeout.
-    KNOWN_VOICES = ["bm_george", "bm_lewis", "bf_emma", "bf_isabella"]
+    # NARRATOR_VOICE in src/voice/voice_registry.js) - the entirety of Kokoro's British English
+    # catalog, so there is no ninth voice any request could ever ask for. Pre-loaded at startup so
+    # the first real synthesis request (whichever voice it needs) never has to pay for an
+    # on-demand Hugging Face download mid-request - that download is what caused the first-ever
+    # TTS call after a fresh install to blow past the client's request timeout.
+    KNOWN_VOICES = [
+        "bm_george", "bm_lewis", "bm_daniel", "bm_fable",
+        "bf_emma", "bf_isabella", "bf_alice", "bf_lily",
+    ]
 
     def __init__(self, lang_code="b"):
         self._pipeline = KPipeline(lang_code=lang_code)

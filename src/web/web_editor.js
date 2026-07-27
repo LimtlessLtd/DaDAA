@@ -18,6 +18,8 @@ const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loa
 const { getRollingSummary } = require('../ai/ai_helper');
 const { generateNextEvent } = require('../ai/ai_provider');
 const { stopSpeaking } = require('../voice/voice_manager');
+const { clearImageQueue } = require('../images/image_gen_manager');
+const { getPortrait } = require('../images/portrait_registry');
 
 const UI_ROOT = path.join(__dirname, '..', '..', 'UI');
 const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
@@ -132,9 +134,10 @@ function startWebEditor() {
                         'character_map.json': '{}',
                         'character_logs.json': '[]',
                         'character_voices.json': '{}',
-                        'campaign_intro.json': '{"text": null, "generatedAt": null}',
+                        'campaign_intro.json': '{"text": null, "narratorPersona": null, "generatedAt": null}',
                         'pending_checks.json': '[]',
-                        'player_logs.json': '[]'
+                        'player_logs.json': '[]',
+                        'npc_portraits.json': '{}'
                     };
 
                     Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
@@ -151,6 +154,25 @@ function startWebEditor() {
                     // into the new campaign.
                     clearAllEntities();
                     resetWorldCache();
+
+                    // 4b. Flush any queued image jobs and delete the actual portrait/event image
+                    // files - the npc_portraits.json manifest reset above only clears the lookup
+                    // table, not the PNGs themselves, and a job for an old-campaign NPC/event
+                    // still mid-flight could otherwise land and get posted/persisted after this
+                    // reset (same reason stopSpeaking() flushes ttsQueue in step 1).
+                    clearImageQueue();
+                    ['portraits', 'event_images'].forEach((dir) => {
+                        const dirPath = path.join(TEMP_DATA_ROOT, dir);
+                        if (fs.existsSync(dirPath)) {
+                            fs.readdirSync(dirPath).forEach((f) => {
+                                try {
+                                    fs.unlinkSync(path.join(dirPath, f));
+                                } catch (e) {
+                                    console.warn(`-> Failed to remove ${dir}/${f}:`, e.message);
+                                }
+                            });
+                        }
+                    });
 
                     // 5. Start Session Zero: the DM asks players for world ideas over voice.
                     // Campaign generation itself (intro lore, secret/public entities, the
@@ -324,12 +346,14 @@ function startWebEditor() {
                     const entities = [];
                     for (const type of types) {
                         for (const record of (worldData[type] || [])) {
+                            const portrait = type === 'npcs' ? getPortrait(record.name) : null;
                             entities.push({
                                 id: record.id,
                                 type,
                                 name: record.name || 'Unnamed',
                                 description: record.description || '',
-                                secret: !!record.secret
+                                secret: !!record.secret,
+                                portraitUrl: portrait ? `/temp_data/${portrait.path}` : null
                             });
                         }
                     }
@@ -395,7 +419,16 @@ function startWebEditor() {
         if (url.pathname.startsWith('/temp_data/')) {
             const tempPath = path.join(TEMP_DATA_ROOT, url.pathname.replace('/temp_data/', ''));
             if (fs.existsSync(tempPath)) {
-                sendFile(res, tempPath, 'application/json; charset=utf-8');
+                // Previously hardcoded to application/json regardless of actual file type - harmless
+                // while this path only ever served JSON/txt, but portraits/event images (.png) would
+                // render broken in an <img> tag with the wrong Content-Type.
+                const ext = path.extname(tempPath).toLowerCase();
+                const contentTypes = {
+                    '.json': 'application/json; charset=utf-8',
+                    '.png': 'image/png',
+                    '.txt': 'text/plain; charset=utf-8'
+                };
+                sendFile(res, tempPath, contentTypes[ext] || 'application/octet-stream');
                 return;
             }
         }

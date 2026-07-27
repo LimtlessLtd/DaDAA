@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { getAllWorldData, saveEntity } = require('../data/data_manager');
+const { enqueueNpcPortrait } = require('../images/image_gen_manager');
 
 const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const transcriptLogPath = path.join(dataDir, 'transcript_log.txt');
@@ -170,6 +171,12 @@ async function addWorldEntity(type, name, description, secret = false) {
     worldDbCache.set(entity.id, entity);
     exactNameCache.set(normalized, entity.id);
 
+    if (type === 'npcs') {
+        // Fire-and-forget - portrait generation is rate-limited and can take a while, this must
+        // never delay entity invention or the RAG sync below. See src/images/image_gen_manager.js.
+        enqueueNpcPortrait(entity);
+    }
+
     await callRagServer('/add', {
         collection: 'dnd_knowledge',
         documents: [`${cleanName}\n${cleanDescription}`],
@@ -186,6 +193,14 @@ async function addWorldEntities(entries) {
     for (const entry of entries) {
         await addWorldEntity(entry?.type, entry?.name, entry?.description, entry?.secret);
     }
+}
+
+// Looks up a previously-invented entity by its exact display name (case/whitespace-insensitive,
+// same normalization as the dedupe cache above) - used by index.js's dialogue loop to re-check
+// whether a speaking NPC already has a world record when a portrait retry is needed.
+function getEntityByName(name) {
+    const id = exactNameCache.get(normalizeText(name));
+    return id ? worldDbCache.get(id) : null;
 }
 
 // Clears the in-memory world cache without touching disk or RAG - used after an external
@@ -333,4 +348,6 @@ module.exports = {
     callRagServer,
     addWorldEntities,
     resetWorldCache,
+    normalizeText,
+    getEntityByName,
 };
