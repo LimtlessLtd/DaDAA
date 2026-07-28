@@ -11,9 +11,11 @@ const {
     loadSessionState,
     saveSessionState,
     readTranscriptLog,
-    resetWorldCache
+    resetWorldCache,
+    addWorldEntities
 } = require('../ai/context_manager');
 const { startSessionZero } = require('../sessions/session_manager');
+const { bumpCampaignEpoch } = require('../sessions/campaign_epoch');
 const { getActiveBackgroundEvents, resolveBackgroundEventAsSurfaced, buildEventTieInContext } = require('../sessions/background_event_manager');
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('../characters/character_manager');
 const { getRollingSummary } = require('../ai/ai_helper');
@@ -21,6 +23,8 @@ const { generateNextEvent } = require('../ai/ai_provider');
 const { stopSpeaking } = require('../voice/voice_manager');
 const { clearImageQueue } = require('../images/image_gen_manager');
 const { getEntityImage } = require('../images/entity_image_registry');
+const { linkCharacter, refreshCharacter, loadDdbCharacters } = require('../characters/ddb_import');
+const { loadCharacterState, initializeStateFromSheet, reconcileMaxHp } = require('../characters/character_state_manager');
 
 const UI_ROOT = __dirname;
 const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
@@ -121,6 +125,13 @@ function startWebEditor() {
         if (pathname === '/api/start_campaign') {
             if (req.method === 'POST') {
                 try {
+                    // 0. Bump the campaign epoch first, before anything else - a DM turn already
+                    // in flight (its LLM call can easily take 30+ seconds on Ollama) captured the
+                    // old epoch at the start of runDmTurn() and checks it again once that call
+                    // resolves. Bumping it here means that turn's stale reply gets discarded
+                    // instead of queuing TTS / overwriting current_event.json after the reset below.
+                    bumpCampaignEpoch();
+
                     // 1. Stop anything still queued/playing from the old campaign - a DM turn can
                     // queue several dialogue segments (narrator + NPC line + narrator again), so
                     // without this, whatever's still queued when the reset happens keeps playing
@@ -143,9 +154,12 @@ function startWebEditor() {
                         'character_voices.json': '{}',
                         'campaign_intro.json': '{"text": null, "narratorPersona": null, "generatedAt": null}',
                         'pending_checks.json': '[]',
+                        'open_group_check.json': '{"active": false}',
                         'player_logs.json': '[]',
                         'entity_images.json': '{}',
-                        'background_events.json': '[]'
+                        'background_events.json': '[]',
+                        'ddb_characters.json': '{}',
+                        'character_state.json': '{}'
                     };
 
                     Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
@@ -337,6 +351,79 @@ function startWebEditor() {
             }
         }
 
+        // Links a Discord user to a public D&D Beyond character (paste the profile URL or bare
+        // ID), imports its core combat stats, binds it via the existing character_map.json
+        // mechanism (same bindCharacter() the voice-driven character-intro flow uses), seeds live
+        // mechanical state on first import only, and syncs the backstory into RAG as a
+        // 'characters' world entity. Usable any time - before a campaign starts or for a
+        // late-joining player - not gated on the player having spoken in voice yet.
+        if (pathname === '/api/ddb_link') {
+            if (req.method === 'POST') {
+                try {
+                    const payload = await readJsonBody(req);
+                    const discordUser = String(payload.discordUser || '').trim();
+                    const characterUrlOrId = String(payload.characterUrlOrId || '').trim();
+                    if (!discordUser || !characterUrlOrId) {
+                        sendJson(res, 400, { error: 'discordUser and characterUrlOrId are both required.' });
+                        return;
+                    }
+
+                    const { characterName, sheet } = await linkCharacter(characterUrlOrId);
+                    bindCharacter(discordUser, characterName);
+
+                    const existingState = loadCharacterState()[characterName];
+                    if (!existingState) {
+                        initializeStateFromSheet(characterName, sheet);
+                    } else {
+                        reconcileMaxHp(characterName, sheet.maxHp);
+                    }
+
+                    const summary = `${sheet.race} ${sheet.classes.map((c) => `${c.name} ${c.level}`).join('/')}.`;
+                    const description = sheet.backstory ? `${summary}\n\n${sheet.backstory}` : summary;
+                    await addWorldEntities([{ type: 'characters', name: characterName, description, secret: false }]);
+
+                    sendJson(res, 200, { ok: true, characterName, sheet });
+                } catch (err) {
+                    sendJson(res, 500, { error: err.message });
+                }
+                return;
+            }
+        }
+
+        // Re-pulls a linked character's baseline sheet fields only (level/HP/AC/abilities/
+        // proficiencies/inventory-as-imported/backstory) - never touches character_state.json's
+        // live HP/conditions/inventory accumulated during play, beyond clamping current HP down
+        // if max HP has shrunk. See character_state_manager.js reconcileMaxHp.
+        if (pathname === '/api/ddb_refresh') {
+            if (req.method === 'POST') {
+                try {
+                    const payload = await readJsonBody(req);
+                    const characterName = String(payload.characterName || '').trim();
+                    if (!characterName) {
+                        sendJson(res, 400, { error: 'characterName is required.' });
+                        return;
+                    }
+
+                    const { sheet } = await refreshCharacter(characterName);
+                    reconcileMaxHp(characterName, sheet.maxHp);
+                    sendJson(res, 200, { ok: true, sheet });
+                } catch (err) {
+                    sendJson(res, 500, { error: err.message });
+                }
+                return;
+            }
+        }
+
+        // Lightweight map of which bound characters have a D&D Beyond link (and when they were
+        // last imported) - polled by the dashboard to decide which Character Mapping rows get a
+        // "Refresh" button, without needing a second round-trip per row.
+        if (pathname === '/api/ddb_links') {
+            if (req.method === 'GET') {
+                sendJson(res, 200, loadDdbCharacters());
+                return;
+            }
+        }
+
         if (pathname === '/api/character_logs') {
             if (req.method === 'GET') {
                 sendJson(res, 200, loadCharacterLogs());
@@ -364,7 +451,7 @@ function startWebEditor() {
             if (req.method === 'GET') {
                 try {
                     const worldData = await getAllWorldData();
-                    const types = ['npcs', 'locations', 'items', 'quests', 'lore', 'encounters'];
+                    const types = ['characters', 'npcs', 'locations', 'items', 'quests', 'lore', 'encounters'];
                     const entities = [];
                     for (const type of types) {
                         for (const record of (worldData[type] || [])) {

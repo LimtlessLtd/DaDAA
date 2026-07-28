@@ -174,13 +174,13 @@
     </header>
 
     <div class="tabs">
-      <button class="tab-button active" data-tab="world">World Setting</button>
-      <button class="tab-button" data-tab="dashboard">Dashboard</button>
+      <button class="tab-button active" data-tab="dashboard">Dashboard</button>
+      <button class="tab-button" data-tab="world">World Setting</button>
       <button class="tab-button" data-tab="debug">Debug &amp; RAG</button>
     </div>
 
     <!-- World Setting Tab -->
-    <div id="tab-world" class="tab-content active">
+    <div id="tab-world" class="tab-content">
       <div class="panel">
         <div class="panel-title">World Setting</div>
         <div id="campaignIntroDisplay" style="color: #cbd5e1; font-size: 0.85rem; line-height: 1.5; max-height: 220px; overflow-y: auto;">
@@ -193,6 +193,7 @@
           World Entities
           <select id="worldEntityFilter" style="width: 160px; font-size: 0.75rem; padding: 4px 8px;">
             <option value="">All Types</option>
+            <option value="characters">Characters</option>
             <option value="npcs">NPCs</option>
             <option value="locations">Locations</option>
             <option value="items">Items</option>
@@ -208,7 +209,7 @@
     </div>
 
     <!-- Dashboard Tab -->
-    <div id="tab-dashboard" class="tab-content">
+    <div id="tab-dashboard" class="tab-content active">
       <div class="grid">
         <!-- Left Column: Insights / Memory -->
         <div class="panel" style="width: 550px; overflow-wrap: anywhere;">
@@ -262,11 +263,13 @@
           <div class="panel-title">Character Mapping</div>
           <div class="input-group">
             <select id="discordUserInput">
-              <option value="">Select Discord User</option>
+              <option value="">Select Discord User (already spoken)</option>
             </select>
+            <input type="text" id="discordUserManualInput" placeholder="...or type a Discord username (for players who haven't spoken yet)" />
             <select id="characterNameInput">
               <option value="">Select Character</option>
             </select>
+            <input type="text" id="ddbUrlInput" placeholder="...or paste a public D&D Beyond character URL to import" />
             <button id="bindCharacterBtn">Bind Character</button>
           </div>
           <div id="characterMapList" style="margin-top: 12px; max-height: 150px; overflow-y: auto;"></div>
@@ -425,23 +428,68 @@
     }
 
     async function bindCharacter() {
-      const discordUser = document.getElementById('discordUserInput').value;
-      const character = document.getElementById('characterNameInput').value;
-      if (!discordUser || !character) {
-        alert('Both fields are required');
+      const manualUser = document.getElementById('discordUserManualInput').value.trim();
+      const discordUser = manualUser || document.getElementById('discordUserInput').value;
+      const ddbUrl = document.getElementById('ddbUrlInput').value.trim();
+      const characterInput = document.getElementById('characterNameInput');
+      const character = characterInput ? characterInput.value : '';
+
+      if (!discordUser) {
+        alert('A Discord username is required - pick one already seen, or type one.');
         return;
       }
+      if (!ddbUrl && !character) {
+        alert('Enter a character name, or paste a D&D Beyond character URL.');
+        return;
+      }
+
+      const btn = document.getElementById('bindCharacterBtn');
+      const originalText = btn.innerText;
+      btn.disabled = true;
+
       try {
-        await fetch('/api/character_map', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'bind', discordUser, character })
-        });
+        if (ddbUrl) {
+          btn.innerText = 'Importing from D&D Beyond...';
+          const res = await fetch('/api/ddb_link', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ discordUser, characterUrlOrId: ddbUrl })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Failed to import from D&D Beyond');
+        } else {
+          await fetch('/api/character_map', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'bind', discordUser, character })
+          });
+        }
         loadCharacterMap();
         document.getElementById('discordUserInput').value = '';
-        document.getElementById('characterNameInput').value = '';
+        document.getElementById('discordUserManualInput').value = '';
+        document.getElementById('ddbUrlInput').value = '';
+        const freshCharacterInput = document.getElementById('characterNameInput');
+        if (freshCharacterInput) freshCharacterInput.value = '';
       } catch (err) {
         alert('Failed to bind character: ' + err.message);
+      } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+      }
+    }
+
+    async function refreshDdbCharacter(characterName) {
+      try {
+        const res = await fetch('/api/ddb_refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ characterName })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Refresh failed');
+        loadCharacterMap();
+      } catch (err) {
+        alert('Failed to refresh from D&D Beyond: ' + err.message);
       }
     }
 
@@ -460,29 +508,37 @@
 
     async function loadCharacterMap() {
       try {
-        const res = await fetch('/api/character_map');
-        if (!res.ok) return;
-        const map = await res.json();
+        const [mapRes, ddbRes] = await Promise.all([
+          fetch('/api/character_map'),
+          fetch('/api/ddb_links')
+        ]);
+        if (!mapRes.ok) return;
+        const map = await mapRes.json();
+        const ddbLinks = ddbRes.ok ? await ddbRes.json() : {};
         const container = document.getElementById('characterMapList');
         const entries = Object.entries(map);
         if (entries.length === 0) {
           container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem; padding: 4px;">No characters mapped.</div>';
           return;
         }
-        
+
         let html = '';
         for (const [user, chars] of entries) {
             html += `<div class="item">
               <strong style="color: #3b82f6;">${escapeHtml(user)}</strong>
               <div style="margin-top: 4px; padding-left: 8px;">`;
-            
+
             for (const char of chars) {
                 const jsUser = user.replace(/'/g, "\\'").replace(/"/g, "&quot;");
                 const jsChar = char.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-                
-                html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
-                    <span style="color: #cbd5e1;">${escapeHtml(char)}</span>
-                    <button style="background: #ef4444; padding: 2px 6px; font-size: 0.7rem;" onclick="unbindCharacter('${jsUser}', '${jsChar}')">Unbind</button>
+                const isLinked = !!ddbLinks[char];
+
+                html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; gap: 6px;">
+                    <span style="color: #cbd5e1;">${escapeHtml(char)}${isLinked ? ' <span class="status-badge" style="background: #1e3a5f; color: #7dd3fc; border-color: #0369a1; font-size: 0.6rem;">D&D Beyond</span>' : ''}</span>
+                    <span style="display: flex; gap: 4px; flex-shrink: 0;">
+                      ${isLinked ? `<button style="background: #334155; padding: 2px 6px; font-size: 0.7rem;" onclick="refreshDdbCharacter('${jsChar}')">Refresh</button>` : ''}
+                      <button style="background: #ef4444; padding: 2px 6px; font-size: 0.7rem;" onclick="unbindCharacter('${jsUser}', '${jsChar}')">Unbind</button>
+                    </span>
                 </div>`;
             }
             html += `</div></div>`;
@@ -576,6 +632,7 @@
     // Fixed display order (not alphabetical - reads more naturally as an intro to the world:
     // who's in it, where it happens, what's around, what's to do, then background/secrets).
     const WORLD_ENTITY_CATEGORIES = [
+      { type: 'characters', label: 'Characters' },
       { type: 'npcs', label: 'NPCs' },
       { type: 'locations', label: 'Locations' },
       { type: 'items', label: 'Items' },
@@ -998,7 +1055,7 @@
     });
 
     // --- Tab Switching ---
-    let currentTab = 'world';
+    let currentTab = 'dashboard';
 
     function switchTab(tab) {
       currentTab = tab;

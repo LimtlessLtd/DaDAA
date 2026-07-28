@@ -12,5 +12,8 @@
   },
   "BackgroundEventConfig": {
     "utteranceInterval": 25
+  },
+  "GroupCheckConfig": {
+    "timeoutMs": 60000
   }
 }

@@ -66,7 +66,7 @@ function deriveVoiceFromDescription(description) {
     if (countMatches(text, HIGH_KEYWORDS) > 0) speed += 0.2;
     if (countMatches(text, SLOW_KEYWORDS) > 0) speed -= 0.1;
     if (countMatches(text, FAST_KEYWORDS) > 0) speed += 0.15;
-    speed = Math.max(0.7, Math.min(1.45, speed));
+    speed = Math.max(0.66, Math.min(1.33, speed));
 
     return {
         voices: [

@@ -132,6 +132,16 @@ function getCharacterMapString() {
     return entries.map(([user, chars]) => `${user} -> ${chars.join(', ')}`).join('\n');
 }
 
+// Flat, de-duplicated list of every character name currently bound to a Discord user, regardless
+// of which player - used as a backstop to stop the DM from ever voicing/narrating as a player
+// character (see index.js runDmTurn()'s dialogue loop): the LLM prompt tells it never to use a
+// bound character's name as a dialogue "speaker", but local models don't always comply, so this
+// gives the code a deterministic list to filter against instead of trusting the prompt alone.
+function getAllBoundCharacterNames() {
+    const map = loadCharacterMap();
+    return [...new Set(Object.values(map).flat())];
+}
+
 function getBoundCharacterName(discordUser) {
     const map = loadCharacterMap();
     if (map[discordUser] && map[discordUser].length > 0) {
@@ -223,6 +233,7 @@ module.exports = {
     unbindCharacter,
     getCharacterMapString,
     getBoundCharacterName,
+    getAllBoundCharacterNames,
     loadCharacterLogs,
     addCharacterLogs,
     loadSeenDiscordUsers,

@@ -1,4 +1,5 @@
 import chromadb
+from chromadb.errors import NotFoundError
 from chromadb.utils import embedding_functions
 
 
@@ -29,10 +30,14 @@ class RagService:
         )
 
     def clear(self, collection):
+        # Deleting a collection that was never created (e.g. nothing has been added to it yet
+        # this campaign) is a no-op, not a failure - /api/start_campaign clears all three
+        # collections unconditionally every time, so this is the common case, not an edge case.
+        # Chroma 1.x raises NotFoundError for this; older versions raised ValueError - catch both.
         try:
             self._client.delete_collection(collection)
             return True
-        except ValueError:
+        except (NotFoundError, ValueError):
             return False
 
     def get_all(self, collection):

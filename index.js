@@ -42,7 +42,14 @@ const {
     addCharacterIntroInput,
     endCharacterIntros
 } = require('./src/sessions/session_manager');
-const { addPendingCheck, resolvePendingCheck } = require('./src/sessions/check_manager');
+const {
+    addPendingCheck,
+    resolvePendingCheck,
+    openGroupCheck,
+    getOpenGroupCheck,
+    recordOpenGroupCheckRoll,
+    closeOpenGroupCheck
+} = require('./src/sessions/check_manager');
 const { isDiceMaidenMessage, parseDiceMaidenRoll, isDiceMaidenError } = require('./src/dice/dice_maiden');
 const {
     bindCharacter,
@@ -54,8 +61,12 @@ const {
     recordDiscordNickname,
     resolveUsernameByNickname,
     getPlayerLogsString,
-    getBoundCharacterName
+    getBoundCharacterName,
+    getAllBoundCharacterNames
 } = require('./src/characters/character_manager');
+const { getCharacterStateString, applyStateChanges } = require('./src/characters/character_state_manager');
+const { getCampaignEpoch } = require('./src/sessions/campaign_epoch');
+const { loadDdbCharacters, refreshAllLinkedCharacters, computeSkillModifier } = require('./src/characters/ddb_import');
 const config = require('./config.json');
 
 console.log('-> Starting DaDAA...');
@@ -173,6 +184,62 @@ function announceCheckRequirement(character, skill, dc) {
     appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
 }
 
+// Same rationale as announceCheckRequirement above, for an open group check (ai_provider.js
+// guideline 6b) - runs unconditionally the moment one is opened. Deliberately doesn't name
+// specific characters, since unlike a solo check nobody in particular is required to respond.
+function announceOpenGroupCheckRequirement(skill, dc) {
+    const announcement = `Everyone, make a ${skill} check if you'd like to try - you need to beat a DC of ${dc}.`;
+    console.log(`-> TTS Queueing (group check announcement): "${announcement}"`);
+    speakText(announcement, 'narrator');
+    appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+}
+
+// An open group check waits out a fixed response window rather than reacting to the first roll -
+// unlike the "everyone must roll" style, a roll landing late (even after an earlier one already
+// failed) can still flip the overall result to success, so resolving early would get the wrong
+// answer, not just a less complete one. Only one group check can be open at a time (see
+// check_manager.js openGroupCheck), so a single timer handle is enough - cleared the moment it
+// resolves (naturally via the timeout, since there's no "everyone's answered" signal to resolve
+// early on) so a stray second timer can never double-resolve it.
+let openGroupCheckTimer = null;
+const GROUP_CHECK_TIMEOUT_MS = config.GroupCheckConfig?.timeoutMs ?? 60000;
+
+function scheduleOpenGroupCheckTimeout() {
+    if (openGroupCheckTimer) clearTimeout(openGroupCheckTimer);
+    openGroupCheckTimer = setTimeout(resolveOpenGroupCheck, GROUP_CHECK_TIMEOUT_MS);
+}
+
+// Tallies whatever voluntary rolls came in while the group check was open: a SUCCESS if at least
+// one of them succeeded, a FAILURE if everyone who rolled failed or nobody rolled at all - per
+// the request, this is deliberately not a majority rule, since a single success is meant to be
+// enough to carry the whole group. Feeds one combined result into the normal DM-turn pipeline,
+// the same way a solo check's "[Dice Roll Result]" does.
+function resolveOpenGroupCheck() {
+    if (openGroupCheckTimer) {
+        clearTimeout(openGroupCheckTimer);
+        openGroupCheckTimer = null;
+    }
+
+    const group = getOpenGroupCheck();
+    if (!group) return;
+
+    const resultEntries = Object.entries(group.results);
+    const respondedCount = resultEntries.length;
+    const anySucceeded = resultEntries.some(([, r]) => r.success);
+
+    const perCharacterText = respondedCount > 0
+        ? resultEntries.map(([name, r]) => `${name}: ${r.total} (${r.outcomeLabel})`).join('; ')
+        : 'nobody rolled';
+    const verdict = anySucceeded ? 'SUCCEEDS' : 'FAILS';
+
+    const summary = `Group ${group.skill} check (DC ${group.dc}): ${perCharacterText} - the group ${verdict} overall.`;
+    console.log(`-> ${summary}`);
+    appendTranscript(summary, 'Dice', Date.now());
+    closeOpenGroupCheck();
+
+    enqueueDmTurn(`[Group Dice Roll Result] ${summary}`);
+}
+
 // Occasional, independent review of "background events" - see src/ai/ai_provider.js
 // updateBackgroundEvents() and src/sessions/background_event_manager.js. Triggered from the
 // utterance handler below on its own counter (config.json BackgroundEventConfig.utteranceInterval),
@@ -193,6 +260,11 @@ async function updateCampaignBackgroundEvents() {
 // dice-roll resolutions - anywhere a "DM turn" needs to happen.
 async function runDmTurn(transcript) {
     if (!worldContext) return null;
+
+    // Captured before any awaits - if /api/start_campaign resets mid-turn, this turn's reply
+    // (built from records/state that may no longer exist) is discarded rather than applied on
+    // top of the fresh campaign. See src/sessions/campaign_epoch.js.
+    const epochAtStart = getCampaignEpoch();
 
     const relevantRecords = await findRelevantRecords(transcript);
     const sessionState = loadSessionState();
@@ -229,7 +301,8 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
     const rollingSummary = getRollingSummary();
     const characterMapStr = getCharacterMapString();
     const playerLogsStr = getPlayerLogsString();
-    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr, narratorPersona);
+    const characterStateStr = getCharacterStateString();
+    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr, narratorPersona, characterStateStr);
 
     const activeModelName = config.OllamaConfig?.enabled
         ? config.OllamaConfig?.model || 'neural-chat'
@@ -255,13 +328,31 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
         const latency = Date.now() - apiStartTime;
         stats.lastLatencyMs = latency;
 
+        if (epochAtStart !== getCampaignEpoch()) {
+            console.log('-> Discarding DM turn: campaign was reset while this turn was in flight.');
+            return null;
+        }
+
         if (aiReply) {
             console.log('-> AI evaluation:', JSON.stringify(aiReply));
 
             if (aiReply.dialogue && Array.isArray(aiReply.dialogue)) {
+                const boundCharacterNames = new Set(getAllBoundCharacterNames().map((n) => n.trim().toLowerCase()));
                 for (const segment of aiReply.dialogue) {
                     if (!segment || !segment.text) continue;
                     const speaker = segment.speaker || 'narrator';
+
+                    // Hard backstop: the DM narrates and voices NPCs, never a player character -
+                    // players alone decide what their characters say and do (see prompt guideline
+                    // 5). Local models don't always comply, so drop any segment attributed to a
+                    // bound character's name entirely rather than speak/post it as if the player
+                    // said it - persisting fabricated player speech into the transcript would also
+                    // poison later turns' memory of what the player actually said.
+                    if (boundCharacterNames.has(speaker.trim().toLowerCase())) {
+                        console.warn(`-> Dropping DM dialogue segment: model tried to speak for player character "${speaker}".`);
+                        continue;
+                    }
+
                     console.log(`-> TTS Queueing: "${segment.text}" [Speaker: ${speaker}]`);
                     speakText(segment.text, speaker, segment.voiceDescription);
                     appendTranscript(segment.text, `Dungeon Master (${speaker})`, Date.now());
@@ -305,7 +396,18 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                 addWorldEntities(aiReply.worldEntities).catch(err => console.warn('-> Failed to save world entities:', err.message));
             }
 
-            if (aiReply.checkCharacter && aiReply.checkSkill && aiReply.checkDc) {
+            if (aiReply.characterStateChanges && Array.isArray(aiReply.characterStateChanges) && aiReply.characterStateChanges.length > 0) {
+                applyStateChanges(aiReply.characterStateChanges);
+            }
+
+            if (aiReply.isGroupCheck && aiReply.checkSkill && aiReply.checkDc) {
+                const group = openGroupCheck(aiReply.checkSkill, aiReply.checkDc);
+                if (group) {
+                    console.log(`-> Open group check registered: ${group.skill} DC ${group.dc}`);
+                    announceOpenGroupCheckRequirement(group.skill, group.dc);
+                    scheduleOpenGroupCheckTimeout();
+                }
+            } else if (aiReply.checkCharacter && aiReply.checkSkill && aiReply.checkDc) {
                 const check = addPendingCheck(aiReply.checkCharacter, aiReply.checkSkill, aiReply.checkDc);
                 if (check) {
                     console.log(`-> Pending check registered: ${check.character} - ${check.skill} DC ${check.dc}`);
@@ -344,6 +446,10 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                         buildEventTieInContext(getActiveBackgroundEvents(), relevantRecords)
                     )
                         .then(newEventObj => {
+                            if (epochAtStart !== getCampaignEpoch()) {
+                                console.log('-> Discarding generated next-event: campaign was reset while it was in flight.');
+                                return;
+                            }
                             if (newEventObj && newEventObj.activeEvent) {
                                 currentEventData.activeEvent = newEventObj.activeEvent;
                                 fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
@@ -455,9 +561,19 @@ async function handleSessionZeroInput(sourceLabel, transcript) {
     const compiledIdeas = endSessionZero();
     console.log('-> Session Zero complete. Generating campaign from player ideas...');
 
+    // Only non-empty when one or more players linked a D&D Beyond character before finishing
+    // Session Zero (via the dashboard's Character Mapping panel) - lets the invented world tie
+    // into their backstories from the very start, rather than only after character intros (see
+    // beginSessionOne's findRelevantRecords-based tie-in for characters introduced by voice only).
+    const ddbCharacters = loadDdbCharacters();
+    const characterBackstories = Object.entries(ddbCharacters)
+        .filter(([, entry]) => entry?.sheet?.backstory)
+        .map(([name, entry]) => `${name}: ${entry.sheet.backstory}`)
+        .join('\n\n');
+
     let seed = null;
     try {
-        seed = await generateCampaignSeed(compiledIdeas);
+        seed = await generateCampaignSeed(compiledIdeas, characterBackstories);
     } catch (err) {
         console.warn('-> Campaign seed generation failed:', err.message);
     }
@@ -533,17 +649,34 @@ async function beginSessionOne(compiledIntros) {
         console.warn('-> Character introduction parsing failed:', err.message);
     }
 
+    const ddbCharacters = loadDdbCharacters();
     let openingContext = '';
     if (introResult && Array.isArray(introResult.characters)) {
         for (const entry of introResult.characters) {
             const discordUser = String(entry?.discordUser || '').trim();
-            const characterName = String(entry?.characterName || '').trim();
-            if (!discordUser || !characterName) continue;
+            let characterName = String(entry?.characterName || '').trim();
+            if (!discordUser) continue;
 
-            bindCharacter(discordUser, characterName);
+            // A player already linked via D&D Beyond is bound before this phase even starts (see
+            // the /api/ddb_link dashboard route) - trust that existing binding over whatever name
+            // the LLM parsed from voice (which may be misspelled or absent if they only stated
+            // their opening action), and use their imported backstory instead of a possibly
+            // hallucinated description. All we actually still need from them here is what their
+            // character is doing as the scene opens.
+            const alreadyBoundName = getBoundCharacterName(discordUser);
+            const linkedSheet = alreadyBoundName ? ddbCharacters[alreadyBoundName]?.sheet : null;
 
-            const description = String(entry?.description || '').trim();
+            let description = String(entry?.description || '').trim();
             const openingAction = String(entry?.openingAction || '').trim();
+
+            if (linkedSheet) {
+                characterName = alreadyBoundName;
+                description = linkedSheet.backstory || `${linkedSheet.race} ${linkedSheet.classes.map((c) => `${c.name} ${c.level}`).join('/')}.`;
+            } else {
+                if (!characterName) continue;
+                bindCharacter(discordUser, characterName);
+            }
+
             const logText = [description, openingAction ? `As the scene opens: ${openingAction}` : ''].filter(Boolean).join(' ');
             if (logText) {
                 addCharacterLogs([{ character: characterName, log: logText, type: 'development' }]);
@@ -558,12 +691,18 @@ async function beginSessionOne(compiledIntros) {
     }
 
     try {
+        // Previously passed [] here, meaning the opening event could never tie into anything
+        // established - including a linked character's D&D Beyond backstory or campaign-seed
+        // lore, even though openingContext (built above) often names exactly that. Querying RAG
+        // with it surfaces whatever's semantically relevant, the same way every later turn's
+        // tie-in context works off a real transcript.
+        const openingRecords = await findRelevantRecords(openingContext);
         const eventObj = await generateNextEvent(
             [],
             pendingCampaignIntroLore || 'A new campaign has just begun.',
             'The players have just finished Session Zero and introduced their characters, and are ready to begin their first scene.',
             openingContext ? `Player Characters and Their Opening Positions:\n${openingContext}` : '',
-            buildEventTieInContext(getActiveBackgroundEvents(), [])
+            buildEventTieInContext(getActiveBackgroundEvents(), openingRecords)
         );
 
         if (eventObj && eventObj.activeEvent) {
@@ -605,6 +744,31 @@ async function handleSilenceDriver() {
 // (the invoking user, when Dice Maiden replied to a real slash-command interaction) since
 // it's unambiguous; fall back to the display name Dice Maiden prints in the message itself,
 // resolved through the nickname map recorded during voice transcription.
+// Shared by solo checks and voluntary open-group-check rolls: computes the effective total,
+// preferring the character's D&D Beyond sheet modifier over whatever the player typed into their
+// roll (see the comment at the solo-check call site for why), and the resulting success/failure
+// including the natural-20/1 override.
+function evaluateRoll(roll, character, skill, dc) {
+    const linkedSheet = loadDdbCharacters()[character]?.sheet;
+    const correctedModifier = (linkedSheet && typeof roll.natural === 'number')
+        ? computeSkillModifier(linkedSheet, skill)
+        : null;
+    const usingCorrectedTotal = correctedModifier !== null;
+    const effectiveTotal = usingCorrectedTotal ? roll.natural + correctedModifier : roll.total;
+
+    let success = effectiveTotal >= dc;
+    let outcomeLabel = success ? 'SUCCESS' : 'FAILURE';
+    if (roll.isCriticalSuccess) {
+        success = true;
+        outcomeLabel = 'CRITICAL SUCCESS (NATURAL 20)';
+    } else if (roll.isCriticalFailure) {
+        success = false;
+        outcomeLabel = 'CRITICAL FAILURE (NATURAL 1)';
+    }
+
+    return { effectiveTotal, success, outcomeLabel, usingCorrectedTotal, correctedModifier };
+}
+
 async function handleDiceMaidenRoll(message) {
     if (isDiceMaidenError(message.content)) {
         console.log('-> Dice Maiden rejected an invalid roll expression, ignoring:', message.content);
@@ -634,29 +798,47 @@ async function handleDiceMaidenRoll(message) {
         return;
     }
 
+    // Prefer recomputing from the character's actual D&D Beyond sheet over trusting whatever
+    // modifier the player typed into their roll (e.g. "/roll 1d20+100") - Dice Maiden's own total
+    // has no way to know if that modifier is correct or was left over from a different check, so
+    // trusting it verbatim lets a mistyped or inflated modifier silently decide the outcome. Only
+    // possible when the natural d20 result is known (dice_maiden.js only extracts this for a
+    // plain single-d20 roll, not multi-die/advantage notations) AND the character has a linked
+    // sheet with a resolvable modifier for the requested skill/ability - otherwise this falls
+    // back to trusting roll.total exactly as before. See evaluateRoll() above.
     const pending = resolvePendingCheck(character);
-    if (!pending) {
+    if (pending) {
+        const { effectiveTotal, success, outcomeLabel, usingCorrectedTotal, correctedModifier } = evaluateRoll(roll, character, pending.skill, pending.dc);
+        const resultLine = usingCorrectedTotal
+            ? `${character} rolled a natural ${roll.natural} for ${pending.skill} - applying their sheet modifier (${correctedModifier >= 0 ? '+' : ''}${correctedModifier}) instead of the roll's own: ${effectiveTotal} vs DC ${pending.dc} - ${outcomeLabel}`
+            : `${character} rolled ${roll.total} for ${pending.skill} (DC ${pending.dc}): ${outcomeLabel}`;
+        console.log(`-> ${resultLine}`);
+        appendTranscript(resultLine, 'Dice', Date.now());
+
+        enqueueDmTurn(`[Dice Roll Result] ${resultLine}`);
+        return;
+    }
+
+    // No solo check pending for this character - are they voluntarily answering an open group
+    // check (ai_provider.js guideline 6b)? Unlike a solo check, nobody specific is required to
+    // roll for one of these: record this roll into the shared scoreboard and let it sit there -
+    // the DM only reacts once the response window closes (scheduleOpenGroupCheckTimeout in
+    // resolveOpenGroupCheck), not per individual roll, since a later roll can still flip an
+    // all-failures-so-far result to an overall success.
+    const openCheck = getOpenGroupCheck();
+    if (!openCheck) {
         appendTranscript(`${character} rolled ${roll.notation || 'dice'}: ${roll.total} (no pending check)`, 'Dice', Date.now());
         return;
     }
 
-    // Natural 20/1 override the DC math entirely (house rule) - a high-modifier character
-    // can still fumble, and a poorly-built one can still pull off the impossible.
-    let success = roll.total >= pending.dc;
-    let outcomeLabel = success ? 'SUCCESS' : 'FAILURE';
-    if (roll.isCriticalSuccess) {
-        success = true;
-        outcomeLabel = 'CRITICAL SUCCESS (NATURAL 20)';
-    } else if (roll.isCriticalFailure) {
-        success = false;
-        outcomeLabel = 'CRITICAL FAILURE (NATURAL 1)';
-    }
-
-    const resultLine = `${character} rolled ${roll.total} for ${pending.skill} (DC ${pending.dc}): ${outcomeLabel}`;
-    console.log(`-> ${resultLine}`);
+    const { effectiveTotal, success, outcomeLabel, usingCorrectedTotal, correctedModifier } = evaluateRoll(roll, character, openCheck.skill, openCheck.dc);
+    const resultLine = usingCorrectedTotal
+        ? `${character} rolled a natural ${roll.natural} for the team ${openCheck.skill} check - applying their sheet modifier (${correctedModifier >= 0 ? '+' : ''}${correctedModifier}) instead of the roll's own: ${effectiveTotal} vs DC ${openCheck.dc} - ${outcomeLabel}`
+        : `${character} rolled ${roll.total} for the team ${openCheck.skill} check (DC ${openCheck.dc}): ${outcomeLabel}`;
+    console.log(`-> ${resultLine} [open group check]`);
     appendTranscript(resultLine, 'Dice', Date.now());
 
-    enqueueDmTurn(`[Dice Roll Result] ${resultLine}`);
+    recordOpenGroupCheckRoll(character, { total: effectiveTotal, success, outcomeLabel });
 }
 
 client.once('clientReady', () => {
@@ -712,6 +894,13 @@ client.once('clientReady', () => {
         .catch((error) => {
             console.error('-> Failed to load world context:', error);
         });
+
+    // Best-effort, never blocks startup - re-pulls each linked character's baseline sheet fields
+    // only (level/HP/AC/abilities/proficiencies/inventory-as-imported/backstory), never touching
+    // character_state.json's live HP/conditions/inventory. See ddb_import.js for details.
+    refreshAllLinkedCharacters().catch((error) => {
+        console.warn('-> Failed to refresh D&D Beyond-linked characters:', error.message);
+    });
 });
 
 client.on('messageCreate', async (message) => {
@@ -785,7 +974,13 @@ client.on('messageCreate', async (message) => {
                 if (isSessionZeroActive()) {
                     handleSessionZeroInput(sourceLabel, transcript);
                 } else if (isCharacterIntroActive()) {
-                    handleCharacterIntroInput(sourceLabel, transcript);
+                    // Deliberately the raw Discord username, not sourceLabel - a player linked via
+                    // D&D Beyond is already bound to a character by this point (see /api/ddb_link),
+                    // so sourceLabel would already be their character name here, not their Discord
+                    // username. parseCharacterIntroductions() tags each line by Discord username
+                    // and beginSessionOne() looks up the binding itself, so this must stay the
+                    // username regardless of any pre-existing binding.
+                    handleCharacterIntroInput(discordName, transcript);
                 } else if (worldContext) {
                     queueDmTranscript(sourceLabel, transcript);
                 }

@@ -74,7 +74,18 @@ function callRagServer(apiPath, data) {
         const req = http.request(options, (res) => {
             let responseData = '';
             res.on('data', (chunk) => responseData += chunk);
-            res.on('end', () => resolve(JSON.parse(responseData || '{}')));
+            res.on('end', () => {
+                // JSON.parse throwing here (a non-JSON body, e.g. an aiohttp plain-text 500 page)
+                // must go through reject(), not throw directly - a throw inside an event-emitter
+                // callback like this one happens outside the Promise executor's try/catch, so it
+                // becomes an uncaught exception that crashes the whole Node process, bypassing
+                // every .catch() at every call site rather than just failing this one RAG call.
+                try {
+                    resolve(JSON.parse(responseData || '{}'));
+                } catch (e) {
+                    reject(new Error(`RAG Server returned invalid JSON from ${apiPath} (HTTP ${res.statusCode}): ${responseData.slice(0, 200)}`));
+                }
+            });
         });
 
         req.setTimeout(60000, () => {
@@ -151,7 +162,7 @@ async function syncKnowledgeToRAG(worldData) {
 // via findRelevantRecords() without waiting for a restart. Skips names already known (case-
 // insensitive) so the DM re-mentioning an established place doesn't create a duplicate entity.
 async function addWorldEntity(type, name, description, secret = false) {
-    const validTypes = ['npcs', 'locations', 'items', 'quests', 'lore', 'encounters'];
+    const validTypes = ['characters', 'npcs', 'locations', 'items', 'quests', 'lore', 'encounters'];
     const cleanName = String(name || '').trim();
     const cleanDescription = String(description || '').trim();
     const isSecret = !!secret;
@@ -173,8 +184,12 @@ async function addWorldEntity(type, name, description, secret = false) {
 
     // Fire-and-forget - image generation is rate-limited and can take a while, this must never
     // delay entity invention or the RAG sync below. See src/images/image_gen_manager.js. Every
-    // entity type gets an image (NPC portrait, location/item/quest/lore/encounter illustration).
-    enqueueEntityImage(entity, type);
+    // DM-invented entity type gets an image (NPC portrait, location/item/quest/lore/encounter
+    // illustration) - player characters are the one exception, since a D&D Beyond-linked
+    // character already has their own reference art/avatar and doesn't need a generated one.
+    if (type !== 'characters') {
+        enqueueEntityImage(entity, type);
+    }
 
     await callRagServer('/add', {
         collection: 'dnd_knowledge',

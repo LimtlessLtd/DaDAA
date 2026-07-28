@@ -9,7 +9,7 @@ function isDiceMaidenMessage(message) {
 }
 
 // Dice Maiden wraps parts of its reply in Discord markdown, e.g.:
-// "🎲 **DM (DM) (Fabian)** Request: `1d20` Roll: `[8]` = **8**"
+// "🎲 **player name** Request: `1d20` Roll: `[8]` = **8**"
 // Strip it before matching so the parser doesn't care whether a given reply happens to be
 // bold/coded or not.
 function stripMarkdown(content) {

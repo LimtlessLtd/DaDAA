@@ -64,7 +64,7 @@ function startCharacterIntros() {
     characterIntroActive = true;
     characterIntroBuffer = [];
 
-    const promptText = "Now, going round the table - tell me your name, your character's name, a brief description of them, and what they're doing as the scene opens. Let me know when everyone's introduced themselves.";
+    const promptText = "Now, going round the table - if you've already linked a D&D Beyond character on the dashboard, just tell me what they're doing as the scene opens. Otherwise, tell me your name, your character's name, a brief description of them, and what they're doing as the scene opens. Let me know when everyone's introduced themselves.";
     const timestamp = new Date().toISOString();
     const broadcastMsg = `[${timestamp}] [DaDAA] ${promptText}\n`;
 
