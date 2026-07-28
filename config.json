@@ -9,5 +9,8 @@
   "DiceMaidenTag": "Dice Maiden#9678",
   "ImageGenConfig": {
     "minIntervalMs": 180000
+  },
+  "BackgroundEventConfig": {
+    "utteranceInterval": 25
   }
 }

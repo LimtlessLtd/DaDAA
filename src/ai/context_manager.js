@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { getAllWorldData, saveEntity } = require('../data/data_manager');
-const { enqueueNpcPortrait } = require('../images/image_gen_manager');
+const { enqueueEntityImage } = require('../images/image_gen_manager');
 
 const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const transcriptLogPath = path.join(dataDir, 'transcript_log.txt');
@@ -171,11 +171,10 @@ async function addWorldEntity(type, name, description, secret = false) {
     worldDbCache.set(entity.id, entity);
     exactNameCache.set(normalized, entity.id);
 
-    if (type === 'npcs') {
-        // Fire-and-forget - portrait generation is rate-limited and can take a while, this must
-        // never delay entity invention or the RAG sync below. See src/images/image_gen_manager.js.
-        enqueueNpcPortrait(entity);
-    }
+    // Fire-and-forget - image generation is rate-limited and can take a while, this must never
+    // delay entity invention or the RAG sync below. See src/images/image_gen_manager.js. Every
+    // entity type gets an image (NPC portrait, location/item/quest/lore/encounter illustration).
+    enqueueEntityImage(entity, type);
 
     await callRagServer('/add', {
         collection: 'dnd_knowledge',

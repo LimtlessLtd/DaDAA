@@ -14,14 +14,15 @@ const {
     resetWorldCache
 } = require('../ai/context_manager');
 const { startSessionZero } = require('../sessions/session_manager');
+const { getActiveBackgroundEvents, resolveBackgroundEventAsSurfaced, buildEventTieInContext } = require('../sessions/background_event_manager');
 const { loadCharacterMap, bindCharacter, unbindCharacter, loadCharacterLogs, loadSeenDiscordUsers } = require('../characters/character_manager');
 const { getRollingSummary } = require('../ai/ai_helper');
 const { generateNextEvent } = require('../ai/ai_provider');
 const { stopSpeaking } = require('../voice/voice_manager');
 const { clearImageQueue } = require('../images/image_gen_manager');
-const { getPortrait } = require('../images/portrait_registry');
+const { getEntityImage } = require('../images/entity_image_registry');
 
-const UI_ROOT = path.join(__dirname, '..', '..', 'UI');
+const UI_ROOT = __dirname;
 const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
 const PORT = Number(process.env.DA_DAA_PORT || 8000);
 
@@ -94,6 +95,12 @@ function startWebEditor() {
                         state.currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
                     } catch(e) {}
                 }
+                const backgroundEventsPath = path.join(TEMP_DATA_ROOT, 'background_events.json');
+                if (fs.existsSync(backgroundEventsPath)) {
+                    try {
+                        state.backgroundEventsData = JSON.parse(fs.readFileSync(backgroundEventsPath, 'utf8'));
+                    } catch(e) {}
+                }
                 sendJson(res, 200, state);
                 return;
             }
@@ -137,7 +144,8 @@ function startWebEditor() {
                         'campaign_intro.json': '{"text": null, "narratorPersona": null, "generatedAt": null}',
                         'pending_checks.json': '[]',
                         'player_logs.json': '[]',
-                        'npc_portraits.json': '{}'
+                        'entity_images.json': '{}',
+                        'background_events.json': '[]'
                     };
 
                     Object.entries(filesToReset).forEach(([filename, defaultValue]) => {
@@ -155,13 +163,13 @@ function startWebEditor() {
                     clearAllEntities();
                     resetWorldCache();
 
-                    // 4b. Flush any queued image jobs and delete the actual portrait/event image
-                    // files - the npc_portraits.json manifest reset above only clears the lookup
-                    // table, not the PNGs themselves, and a job for an old-campaign NPC/event
+                    // 4b. Flush any queued image jobs and delete the actual entity/event image
+                    // files - the entity_images.json manifest reset above only clears the lookup
+                    // table, not the PNGs themselves, and a job for an old-campaign entity/event
                     // still mid-flight could otherwise land and get posted/persisted after this
                     // reset (same reason stopSpeaking() flushes ttsQueue in step 1).
                     clearImageQueue();
-                    ['portraits', 'event_images'].forEach((dir) => {
+                    ['entity_images', 'event_images'].forEach((dir) => {
                         const dirPath = path.join(TEMP_DATA_ROOT, dir);
                         if (fs.existsSync(dirPath)) {
                             fs.readdirSync(dirPath).forEach((f) => {
@@ -278,11 +286,25 @@ function startWebEditor() {
                         } catch(e){}
                     }
 
-                    const newEventObj = await generateNextEvent(currentEventData.archivedEvents, rollingSummary, "Manually generated event by DM");
+                    const newEventObj = await generateNextEvent(
+                        currentEventData.archivedEvents,
+                        rollingSummary,
+                        "Manually generated event by DM",
+                        '',
+                        buildEventTieInContext(getActiveBackgroundEvents(), [])
+                    );
 
                     if (newEventObj && newEventObj.activeEvent) {
                         currentEventData.activeEvent = newEventObj.activeEvent;
                         fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                        if (newEventObj.linkedBackgroundEventId) {
+                            resolveBackgroundEventAsSurfaced(
+                                newEventObj.linkedBackgroundEventId,
+                                `Surfaced as a manually generated event: ${newEventObj.activeEvent.title}`
+                            );
+                        }
+
                         sendJson(res, 200, { activeEvent: currentEventData.activeEvent });
                     } else {
                         sendJson(res, 400, { error: 'Failed to generate event.' });
@@ -346,14 +368,14 @@ function startWebEditor() {
                     const entities = [];
                     for (const type of types) {
                         for (const record of (worldData[type] || [])) {
-                            const portrait = type === 'npcs' ? getPortrait(record.name) : null;
+                            const image = getEntityImage(record.name);
                             entities.push({
                                 id: record.id,
                                 type,
                                 name: record.name || 'Unnamed',
                                 description: record.description || '',
                                 secret: !!record.secret,
-                                portraitUrl: portrait ? `/temp_data/${portrait.path}` : null
+                                imageUrl: image ? `/temp_data/${image.path}` : null
                             });
                         }
                     }

@@ -18,14 +18,20 @@ const {
     getEntityByName
 } = require('./src/ai/context_manager');
 const {
-    enqueueNpcPortrait,
+    enqueueEntityImage,
     enqueueEventImage,
     setActiveTextChannel,
     postToActiveChannel
 } = require('./src/images/image_gen_manager');
-const { getPortrait } = require('./src/images/portrait_registry');
+const { getEntityImage } = require('./src/images/entity_image_registry');
 const { rememberAiInsight, getRollingSummary, updateRollingSummary } = require('./src/ai/ai_helper');
-const { buildPrompt, callModel, generateNextEvent, generateCampaignSeed, parseCharacterIntroductions } = require('./src/ai/ai_provider');
+const { buildPrompt, callModel, generateNextEvent, generateCampaignSeed, parseCharacterIntroductions, updateBackgroundEvents } = require('./src/ai/ai_provider');
+const {
+    getActiveBackgroundEvents,
+    applyBackgroundEventUpdates,
+    resolveBackgroundEventAsSurfaced,
+    buildEventTieInContext
+} = require('./src/sessions/background_event_manager');
 const { startWebEditor } = require('./src/web/web_editor');
 const {
     isSessionZeroActive,
@@ -67,6 +73,7 @@ let worldContext = null;
 let ownerUserId = process.env.BOT_OWNER_ID || null;
 const TEMP_DATA_DIR = path.join(__dirname, 'temp_data');
 let transcriptCounter = 0;
+let backgroundEventCounter = 0;
 
 let stats = {
     totalUtterances: 0,
@@ -166,6 +173,21 @@ function announceCheckRequirement(character, skill, dc) {
     appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
 }
 
+// Occasional, independent review of "background events" - see src/ai/ai_provider.js
+// updateBackgroundEvents() and src/sessions/background_event_manager.js. Triggered from the
+// utterance handler below on its own counter (config.json BackgroundEventConfig.utteranceInterval),
+// deliberately decoupled from runDmTurn()/the current-event mechanic - these threads are meant to
+// progress on their own schedule, not every DM turn.
+async function updateCampaignBackgroundEvents() {
+    const activeThreads = getActiveBackgroundEvents();
+    const recentLines = readTranscriptLog().split('\n').filter(Boolean).slice(-15).join('\n');
+    const result = await updateBackgroundEvents(activeThreads, getRollingSummary(), recentLines);
+    if (result) {
+        applyBackgroundEventUpdates(result);
+        console.log(`-> Background events updated (${getActiveBackgroundEvents().length} active threads).`);
+    }
+}
+
 // Shared pipeline: build world context, call the LLM, and react to its reply.
 // Used for real transcribed speech, the silence driver's synthetic prompt, and
 // dice-roll resolutions - anywhere a "DM turn" needs to happen.
@@ -245,21 +267,24 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     appendTranscript(segment.text, `Dungeon Master (${speaker})`, Date.now());
 
                     if (speaker.trim().toLowerCase() !== 'narrator') {
-                        const portrait = getPortrait(speaker);
+                        const portrait = getEntityImage(speaker);
+                        const entity = getEntityByName(speaker);
                         if (!portrait) {
-                            // Light retry: this NPC has no portrait yet (rate limit, or this is
+                            // Light retry: this NPC has no image yet (rate limit, or this is
                             // their very first line before addWorldEntity's job even started) -
                             // re-check their world record and re-enqueue if one exists.
-                            // enqueueNpcPortrait() re-checks getPortrait()/queue membership
-                            // itself, so repeated calls across many lines before the portrait
+                            // enqueueEntityImage() re-checks getEntityImage()/queue membership
+                            // itself, so repeated calls across many lines before the image
                             // completes are harmless.
-                            const entity = getEntityByName(speaker);
-                            if (entity) enqueueNpcPortrait(entity);
+                            if (entity) enqueueEntityImage(entity, entity.category || 'npcs');
                         }
                         // Fire-and-forget - posting text-only when no portrait exists yet is the
-                        // expected, correct behavior, not a bug to fix.
+                        // expected, correct behavior, not a bug to fix. Caption includes the
+                        // entity's description alongside the spoken line so the image is never
+                        // posted without the context that generated it.
+                        const caption = entity?.description ? `\n🎨 *${entity.description}*` : '';
                         postToActiveChannel({
-                            content: `**${speaker}:** ${segment.text}`,
+                            content: `🗣️ **${speaker}:** ${segment.text}${caption}`,
                             files: portrait ? [{ attachment: path.join(TEMP_DATA_DIR, portrait.path), name: 'portrait.png' }] : []
                         });
                     }
@@ -311,11 +336,24 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     currentEventData.activeEvent = null;
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
 
-                    generateNextEvent(currentEventData.archivedEvents, rollingSummary, aiReply.resolutionSummary)
+                    generateNextEvent(
+                        currentEventData.archivedEvents,
+                        rollingSummary,
+                        aiReply.resolutionSummary,
+                        '',
+                        buildEventTieInContext(getActiveBackgroundEvents(), relevantRecords)
+                    )
                         .then(newEventObj => {
                             if (newEventObj && newEventObj.activeEvent) {
                                 currentEventData.activeEvent = newEventObj.activeEvent;
                                 fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+
+                                if (newEventObj.linkedBackgroundEventId) {
+                                    resolveBackgroundEventAsSurfaced(
+                                        newEventObj.linkedBackgroundEventId,
+                                        `Surfaced as the new current event: ${newEventObj.activeEvent.title}`
+                                    );
+                                }
                             }
                         }).catch(err => console.error('-> Failed to generate new event:', err));
 
@@ -524,12 +562,20 @@ async function beginSessionOne(compiledIntros) {
             [],
             pendingCampaignIntroLore || 'A new campaign has just begun.',
             'The players have just finished Session Zero and introduced their characters, and are ready to begin their first scene.',
-            openingContext ? `Player Characters and Their Opening Positions:\n${openingContext}` : ''
+            openingContext ? `Player Characters and Their Opening Positions:\n${openingContext}` : '',
+            buildEventTieInContext(getActiveBackgroundEvents(), [])
         );
 
         if (eventObj && eventObj.activeEvent) {
             const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
             fs.writeFileSync(eventPath, JSON.stringify({ activeEvent: eventObj.activeEvent, archivedEvents: [] }, null, 2), 'utf8');
+
+            if (eventObj.linkedBackgroundEventId) {
+                resolveBackgroundEventAsSurfaced(
+                    eventObj.linkedBackgroundEventId,
+                    `Surfaced as the opening event: ${eventObj.activeEvent.title}`
+                );
+            }
 
             const announcement = `Session One begins. ${eventObj.activeEvent.description}`;
             console.log('-> Announcing opening event:', eventObj.activeEvent.title);
@@ -720,7 +766,13 @@ client.on('messageCreate', async (message) => {
                         updateRollingSummary(logLines).catch(err => console.warn('-> Rolling summary error:', err.message));
                     }
                 }
-                
+
+                backgroundEventCounter++;
+                if (backgroundEventCounter >= (config.BackgroundEventConfig?.utteranceInterval ?? 25)) {
+                    backgroundEventCounter = 0;
+                    updateCampaignBackgroundEvents().catch(err => console.warn('-> Background events error:', err.message));
+                }
+
                 lastSpeechTimestamp = Date.now();
                 if (silenceTimer) {
                     clearTimeout(silenceTimer);

@@ -249,6 +249,11 @@
                <!-- Archived events injected here -->
                No archived events.
             </div>
+            <div style="margin-top: 10px; font-size: 0.75rem; color: #64748b; font-weight: bold;" title="Slow-burn threads progressing independently of the current event above - players may not know about these yet">Background Threads</div>
+            <div id="backgroundEventsDisplay" style="background: #0f172a; padding: 8px; border-radius: 6px; border: 1px solid #334155; font-size: 0.75rem; color: #94a3b8; margin-top: 4px; max-height: 120px; overflow-y: auto;">
+               <!-- Active background threads injected here -->
+               No background threads yet.
+            </div>
           </div>
         </div>
 
@@ -525,6 +530,21 @@
              document.getElementById('archivedEventsDisplay').textContent = 'No archived events.';
           }
         }
+
+        const activeThreads = (state.backgroundEventsData || []).filter((t) => t.status !== 'resolved');
+        if (activeThreads.length > 0) {
+           document.getElementById('backgroundEventsDisplay').innerHTML = activeThreads.map((t) => `
+              <div style="margin-bottom: 6px; border-bottom: 1px solid #334155; padding-bottom: 4px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <strong>${escapeHtml(t.title)}</strong>
+                      ${t.secret ? '<span class="status-badge" style="background: #7f1d1d; color: #fca5a5; border-color: #991b1b; font-size: 0.65rem;">SECRET</span>' : ''}
+                  </div>
+                  ${escapeHtml(t.currentState || t.description)}
+              </div>
+           `).join('');
+        } else {
+           document.getElementById('backgroundEventsDisplay').textContent = 'No background threads yet.';
+        }
       } catch (e) {
         console.warn('Failed to load session state', e);
       }
@@ -596,7 +616,7 @@
           const isCollapsed = collapsedWorldCategories.has(type);
           const cardsHtml = entities.map((e) => `
             <div class="item" style="display: flex; gap: 10px; align-items: flex-start;">
-              ${e.portraitUrl ? `<img src="${escapeHtml(e.portraitUrl)}" style="width: 48px; height: 48px; object-fit: cover; border-radius: 6px; flex-shrink: 0;" />` : ''}
+              ${e.imageUrl ? `<img src="${escapeHtml(e.imageUrl)}" style="width: 48px; height: 48px; object-fit: cover; border-radius: 6px; flex-shrink: 0;" />` : ''}
               <div style="flex: 1; min-width: 0;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                   <strong style="color: #3b82f6;">${escapeHtml(e.name)}</strong>

@@ -344,7 +344,7 @@ function requestJson(url, headers, body) {
     });
 }
 
-function generateNextEvent(archivedEvents, rollingSummary, lastResolution, extraContext = '') {
+function generateNextEvent(archivedEvents, rollingSummary, lastResolution, extraContext = '', tieInContext = '') {
     const recentEvents = Array.isArray(archivedEvents) ? archivedEvents.slice(-5) : [];
 
     const prompt = `You are an expert Dungeon Master. The players have just resolved the previous event, and you need to generate the NEXT immediate event, obstacle, puzzle, or scene they face. Be creative and think outside the box.
@@ -358,7 +358,8 @@ ${JSON.stringify(recentEvents, null, 2)}
 How they resolved the last event:
 ${lastResolution || 'N/A'}
 ${extraContext ? `\n${extraContext.trim()}\n` : ''}
-Based on their actions and the current narrative, generate the new Active Event. Ensure you focus on STAKES (what happens if they do nothing) and COMPLICATIONS (what pushes back against them).
+${tieInContext ? `\n${tieInContext.trim()}\n` : ''}
+Based on their actions and the current narrative, generate the new Active Event. Ensure you focus on STAKES (what happens if they do nothing) and COMPLICATIONS (what pushes back against them). Prefer tying the new event into an established Background Thread or World Element listed above when one fits naturally, rather than inventing an unconnected cast from scratch - recurring threats and threads should feel connected, not one-off.
 Respond ONLY with a JSON object in this exact format. Do not use markdown backticks:
 {
   "activeEvent": {
@@ -366,7 +367,8 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
     "description": "What do the players see, hear, or experience right now?",
     "stakes": "What happens if they do nothing or fail? (e.g., 'The town panics and prices quadruple')",
     "complication": "What is the immediate obstacle or twist pushing back against them? (e.g., 'Guards suspect the players')"
-  }
+  },
+  "linkedBackgroundEventId": "The exact id of the Background Thread above this event grew out of, or null if this event isn't tied to any of them."
 }`;
 
     if (config.OllamaConfig?.enabled) {
@@ -384,6 +386,78 @@ Respond ONLY with a JSON object in this exact format. Do not use markdown backti
     }
 
     return fallbackToCloudProvidersForEvents(prompt);
+}
+
+// Occasional, low-frequency review of "background events" - narrative threads that progress
+// independently of the single "current event" the players are directly facing (index.js's
+// updateCampaignBackgroundEvents(), triggered every N utterances, see config.json
+// BackgroundEventConfig.utteranceInterval). Deliberately framed as private/DM-only and
+// change-averse: most threads should stay exactly as they are on most calls. Returns
+// { updates: [...], newThread: {...}|null } or null. Nested shape (updates is an array of
+// objects, newThread is a nested object) - parsed with parseJsonLoose, never normaliseJson, same
+// reasoning as generateNextEvent's { activeEvent: {...} } above.
+function updateBackgroundEvents(activeThreads, rollingSummary, recentTranscript) {
+    const threadsJson = JSON.stringify((activeThreads || []).map((t) => ({
+        id: t.id,
+        title: t.title,
+        currentState: t.currentState || t.description,
+        status: t.status
+    })), null, 2);
+
+    const prompt = `You are the Dungeon Master's private background-events tracker. Background events are slow-burn threads happening in the world independently of whatever the players are directly facing right now (the "current event") - a cult gathering, a rival adventuring party's progress, a political feud, a plague spreading, etc. They evolve occasionally and quietly; the players may never learn of most of them directly unless they surface through play.
+
+Existing Background Threads:
+${(activeThreads && activeThreads.length > 0) ? threadsJson : 'None yet.'}
+
+Short-Term Session Memory:
+${rollingSummary || 'No major events recorded.'}
+
+Recent Transcript:
+${recentTranscript || 'N/A'}
+
+Review the existing threads above against recent play. For each one, decide if it should progress (a small, specific change to its "currentState"), resolve (concludes, for better or worse), or stay exactly as-is (omit it from "updates" entirely if nothing changed - most threads should NOT change most of the time). Only propose ONE new background thread, and only if something in recent play plausibly seeds one (an offhand rumor, an unresolved detail, a named threat left unaddressed) - most reviews should propose no new thread at all (null). Keep changes subtle and low-frequency; this is slow-burn worldbuilding, not another current event.
+
+Respond ONLY with a JSON object in this exact format. Do not use markdown backticks:
+{
+  "updates": [ { "id": "the exact id of an existing thread above", "status": "active | resolved", "currentState": "A short, specific update to what's happening now", "note": "One sentence for the DM's own log of what changed and why" } ],
+  "newThread": { "title": "Short title", "description": "The premise - what's actually going on, written as a DM-only reference fact", "relatedEntityNames": ["Existing NPC/location/lore names this ties into, if any"], "secret": true } | null
+}`;
+
+    if (config.OllamaConfig?.enabled) {
+        return callOllama(prompt).then(res => {
+            try {
+                return parseJsonLoose(res);
+            } catch (e) {
+                console.warn('-> Ollama background-event parsing failed, falling back to cloud providers:', e.message);
+                return fallbackToCloudProvidersForBackgroundEvents(prompt);
+            }
+        }).catch(error => {
+            console.warn('-> Ollama call failed for background-event update, falling back to cloud providers:', error.message);
+            return fallbackToCloudProvidersForBackgroundEvents(prompt);
+        });
+    }
+
+    return fallbackToCloudProvidersForBackgroundEvents(prompt);
+}
+
+function fallbackToCloudProvidersForBackgroundEvents(prompt) {
+    const selected = selectCloudProvider();
+    if (!selected) {
+        console.warn('-> AI Provider: Ollama is disabled and no valid cloud API keys found for background-event update (tried Gemini -> Anthropic -> OpenAI)');
+        return Promise.resolve(null);
+    }
+
+    console.log(`-> Using ${selected.provider} as LLM provider for background-event update`);
+
+    return callCloudProvider(selected.provider, selected.apiKey, prompt).then(res => {
+        if (!res) return null;
+        try {
+            return parseJsonLoose(res);
+        } catch (e) {
+            console.error(`Failed to parse background-event JSON from ${selected.provider}:`, e);
+            return null;
+        }
+    });
 }
 
 // One-shot "invent a whole campaign starting point" call - triggered when players finish
@@ -588,4 +662,4 @@ function flatten(obj, result = {}) {
     return result;
 }
 
-module.exports = { buildPrompt, callModel, generateNextEvent, generateCampaignSeed, parseCharacterIntroductions };
+module.exports = { buildPrompt, callModel, generateNextEvent, generateCampaignSeed, parseCharacterIntroductions, updateBackgroundEvents };
