@@ -678,4 +678,11 @@ function flatten(obj, result = {}) {
     return result;
 }
 
-module.exports = { buildPrompt, callModel, generateNextEvent, generateCampaignSeed, parseCharacterIntroductions, updateBackgroundEvents };
+module.exports = { 
+    buildPrompt,
+    callModel,
+    generateNextEvent,
+    generateCampaignSeed,
+    parseCharacterIntroductions,
+    updateBackgroundEvents
+};

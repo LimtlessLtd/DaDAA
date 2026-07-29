@@ -30,11 +30,26 @@ Ollama is the **default and recommended** provider when enabled. To use Ollama:
 
 ```json
 {
-  "LLM": "gemini-3.5-flash", /*only used if Ollama "enabled" is set to false*/
+  "LLM": "gemini-3.5-flash",
   "OllamaConfig": {
     "enabled": true,
     "baseUrl": "http://localhost:11434",
-    "model": "qwen3.5"
+    "model": "qwen3.5",
+    "numCtx": 32768
+  },
+  "DiceMaidenTag": "Dice Maiden#9678",
+  "ImageGenConfig": {
+    "enabled": true,
+    "minIntervalMs": 120000
+  },
+  "BackgroundEventConfig": {
+    "utteranceInterval": 25
+  },
+  "GroupCheckConfig": {
+    "timeoutMs": 120000
+  },
+  "SilenceDriverConfig": {
+    "timeoutMs": 300000
   }
 }
 ```

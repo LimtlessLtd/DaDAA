@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { getAllWorldData, saveEntity } = require('../data/data_manager');
-const { enqueueEntityImage } = require('../images/image_gen_manager');
 
 const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const transcriptLogPath = path.join(dataDir, 'transcript_log.txt');
@@ -182,14 +181,11 @@ async function addWorldEntity(type, name, description, secret = false) {
     worldDbCache.set(entity.id, entity);
     exactNameCache.set(normalized, entity.id);
 
-    // Fire-and-forget - image generation is rate-limited and can take a while, this must never
-    // delay entity invention or the RAG sync below. See src/images/image_gen_manager.js. Every
-    // DM-invented entity type gets an image (NPC portrait, location/item/quest/lore/encounter
-    // illustration) - player characters are the one exception, since a D&D Beyond-linked
-    // character already has their own reference art/avatar and doesn't need a generated one.
-    if (type !== 'characters') {
-        enqueueEntityImage(entity, type);
-    }
+    // Deliberately does NOT enqueue an image here - inventing an entity isn't the same as it
+    // being "new to" the players, especially for secret/background lore they may never actually
+    // encounter. Image generation is instead triggered from index.js runDmTurn()'s dialogue loop,
+    // the first time an entity is actually spoken by (an NPC) or mentioned in narration
+    // (findMentionedEntities()) - i.e. only for things the DM actually brings up in play.
 
     await callRagServer('/add', {
         collection: 'dnd_knowledge',
@@ -215,6 +211,25 @@ async function addWorldEntities(entries) {
 function getEntityByName(name) {
     const id = exactNameCache.get(normalizeText(name));
     return id ? worldDbCache.get(id) : null;
+}
+
+// Scans narration/dialogue text for mentions of any already-known world entity, by substring
+// match against the same normalized name index exactNameCache/getEntityByName use for exact
+// lookups - used so the DM can post an entity's image alongside a line that brings it up (e.g.
+// narration describing a location or item), not only when that entity itself is the one speaking.
+function findMentionedEntities(text) {
+    if (!text) return [];
+    const normalizedText = normalizeText(text);
+    if (!normalizedText) return [];
+
+    const matches = [];
+    for (const [normalizedName, id] of exactNameCache.entries()) {
+        if (normalizedName && normalizedText.includes(normalizedName)) {
+            const entity = worldDbCache.get(id);
+            if (entity) matches.push(entity);
+        }
+    }
+    return matches;
 }
 
 // Clears the in-memory world cache without touching disk or RAG - used after an external
@@ -360,8 +375,10 @@ module.exports = {
     stripHtml,
     extractDescription,
     callRagServer,
+    addWorldEntity,
     addWorldEntities,
     resetWorldCache,
     normalizeText,
     getEntityByName,
+    findMentionedEntities,
 };

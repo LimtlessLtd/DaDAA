@@ -8,12 +8,16 @@
   },
   "DiceMaidenTag": "Dice Maiden#9678",
   "ImageGenConfig": {
-    "minIntervalMs": 180000
+    "enabled": true,
+    "minIntervalMs": 240000
   },
   "BackgroundEventConfig": {
     "utteranceInterval": 25
   },
   "GroupCheckConfig": {
+    "timeoutMs": 120000
+  },
+  "SilenceDriverConfig": {
     "timeoutMs": 60000
   }
 }

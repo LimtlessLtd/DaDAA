@@ -6,9 +6,11 @@
 // guideline 5), not by entity id - using the same key for every entity type keeps lookup uniform.
 //
 // Deliberately does NOT import normalizeText from context_manager.js, even though it's the same
-// one-line logic - context_manager.js require()s image_gen_manager.js (to fire image jobs from
-// addWorldEntity()), which requires this file, so importing context_manager.js back from here
-// would form a require cycle. Duplicating this trivial function avoids that entirely.
+// one-line logic - image_gen_manager.js (which requires this file) is required FROM
+// context_manager.js in spirit (entity image jobs are triggered from world-entity/dialogue
+// handling that lives there), so importing context_manager.js back from here risks a require
+// cycle the moment that relationship is added directly. Duplicating this trivial function avoids
+// depending on that staying true.
 const fs = require('fs');
 const path = require('path');
 

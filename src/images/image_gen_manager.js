@@ -45,6 +45,13 @@ function setActiveTextChannel(channel) {
     activeTextChannel = channel;
 }
 
+// config.json ImageGenConfig.enabled - defaults to true (via !== false) so an existing config.json
+// that predates this flag keeps working unchanged. Checked at the top of both enqueue functions
+// so a disabled campaign never touches the queue, the rate gate, or the Python image server at all.
+function imageGenEnabled() {
+    return config.ImageGenConfig?.enabled !== false;
+}
+
 // Flushes anything still queued - used on "Start New Campaign" so a job for the OLD campaign's
 // entity/event can't land and get persisted/posted after the reset (mirrors voice_manager.js
 // stopSpeaking() flushing ttsQueue for the same reason).
@@ -58,6 +65,7 @@ function eventImageSignature(activeEvent) {
 }
 
 function enqueueEntityImage(entity, type) {
+    if (!imageGenEnabled()) return;
     if (!entity || !entity.id || !entity.name) return;
     if (!ENTITY_IMAGE_STYLE[type]) return; // unknown type - nothing sensible to generate
     if (getEntityImage(entity.name)) return; // already locked in
@@ -67,6 +75,7 @@ function enqueueEntityImage(entity, type) {
 }
 
 function enqueueEventImage(activeEvent) {
+    if (!imageGenEnabled()) return;
     if (!activeEvent || !activeEvent.title) return;
 
     // Nothing actually changed (e.g. status flipped to escalated/evolved but this turn had no

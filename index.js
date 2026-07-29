@@ -4,7 +4,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
-const { joinAndListen, speakText } = require('./src/voice/voice_manager');
+const { joinAndListen, speakText, pregenerateStaticAudio } = require('./src/voice/voice_manager');
 const { getVoiceConnection } = require('@discordjs/voice');
 const {
     initializeWorldContext,
@@ -13,9 +13,11 @@ const {
     loadSessionState,
     saveSessionState,
     findRelevantRecords,
+    addWorldEntity,
     addWorldEntities,
     callRagServer,
-    getEntityByName
+    getEntityByName,
+    findMentionedEntities
 } = require('./src/ai/context_manager');
 const {
     enqueueEntityImage,
@@ -40,7 +42,9 @@ const {
     startCharacterIntros,
     isCharacterIntroActive,
     addCharacterIntroInput,
-    endCharacterIntros
+    endCharacterIntros,
+    SESSION_ZERO_PROMPT,
+    CHARACTER_INTRO_PROMPT
 } = require('./src/sessions/session_manager');
 const {
     addPendingCheck,
@@ -94,8 +98,12 @@ let stats = {
 };
 
 // --- SILENCE DRIVER VARIABLES ---
+// Used to just fire a brand-new LLM turn ("progress the scene") after 90s of silence - replaced
+// per request with a much simpler behavior: after this much silence, just repeat whatever the DM
+// last said (no new LLM call, see lastSpokenTurn/handleSilenceDriver below), and keep repeating it
+// every interval for as long as the silence continues.
 let silenceTimer = null;
-const SILENCE_TIMEOUT_MS = 90000; // 90 seconds of silence before the DM speaks up
+const SILENCE_TIMEOUT_MS = config.SilenceDriverConfig?.timeoutMs ?? 5 * 60 * 1000; // ms of silence before the DM repeats itself - config.json SilenceDriverConfig.timeoutMs
 let lastSpeechTimestamp = Date.now();
 const activeSpeakers = new Set();
 
@@ -113,10 +121,26 @@ let dmTurnQueue = Promise.resolve();
 // introductions are done) still needs it as scene-setting context for the opening event.
 let pendingCampaignIntroLore = null;
 
+// The most recent turn's spoken dialogue segments ({speaker, text, voiceDescription}), replayed
+// verbatim by handleSilenceDriver() on sustained silence instead of generating anything new -
+// updated at the end of runDmTurn()'s dialogue loop, deliberately not touched by one-off audio
+// (THINKING_FILLERS, check announcements) so silence always repeats actual narration.
+let lastSpokenTurn = [];
+
+// Tracks whether a turn is currently running anywhere in dmTurnQueue (real speech, dice-roll, or
+// silence-driver triggers all funnel through here) - queueDmTranscript below uses this to avoid
+// committing a new filler+turn on top of one that's still cooking. Set true synchronously before
+// the promise chain resumes so a burst of enqueueDmTurn calls landing back-to-back can't all read
+// it as false before the first one's runDmTurn actually starts.
+let dmTurnInFlight = false;
+
 function enqueueDmTurn(transcript) {
+    dmTurnInFlight = true;
     dmTurnQueue = dmTurnQueue.then(() => runDmTurn(transcript)).catch((err) => {
         console.error('-> DM turn failed:', err.message);
         return null;
+    }).finally(() => {
+        dmTurnInFlight = false;
     });
     return dmTurnQueue;
 }
@@ -130,36 +154,57 @@ function enqueueDmTurn(transcript) {
 // audible confirmation they were heard well before the real (slow) reply comes back. Only used
 // for the real-speech trigger site - dice-roll and silence-driver turns are already discrete,
 // one-off events with nothing to coalesce.
+//
+// The debounce gap alone only coalesces a tight burst (people replying to each other within
+// DM_TURN_DEBOUNCE_MS) - it says nothing about whether a turn is already being processed. A table
+// naturally keeps talking with gaps longer than that while waiting on a slow local model, and
+// each such gap used to commit its OWN filler+turn on top of whatever was still cooking, so
+// fillers piled up and played back-to-back while real replies queued up behind them, arriving
+// late and out of sync. tryCommitPendingTranscript() below checks dmTurnInFlight and, if a turn
+// is still running, just reschedules itself (short poll, no new filler) instead of committing -
+// so everything said while the DM is "thinking" gets folded into ONE follow-up turn once it's
+// actually free, rather than each gap spawning a separate one.
 const DM_TURN_DEBOUNCE_MS = 3000;
+const DM_TURN_INFLIGHT_POLL_MS = 1000;
 const THINKING_FILLERS = [
-    "Mm, one moment.",
-    "Let me think on that.",
-    "Hmm, considering that.",
-    "One moment.",
-    "Let's see."
+    "Analysing.",
+    "Assessing.",
+    "Calculating.",
+    "Computing.",
+    "Evaluating.",
+    "Examining.",
+    "Processing.",
+    "Postulating."
 ];
 let thinkingFillerIndex = 0;
 let pendingTranscriptEntries = [];
 let pendingTranscriptTimer = null;
 
+function tryCommitPendingTranscript() {
+    if (dmTurnInFlight) {
+        pendingTranscriptTimer = setTimeout(tryCommitPendingTranscript, DM_TURN_INFLIGHT_POLL_MS);
+        return;
+    }
+
+    const entries = pendingTranscriptEntries;
+    pendingTranscriptEntries = [];
+    pendingTranscriptTimer = null;
+    if (entries.length === 0) return;
+
+    const combined = entries.length === 1
+        ? entries[0].text
+        : entries.map((e) => `[${e.source}]: ${e.text}`).join('\n');
+
+    speakText(THINKING_FILLERS[thinkingFillerIndex], 'narrator');
+    thinkingFillerIndex = (thinkingFillerIndex + 1) % THINKING_FILLERS.length;
+
+    enqueueDmTurn(combined);
+}
+
 function queueDmTranscript(source, transcript) {
     pendingTranscriptEntries.push({ source, text: transcript });
     if (pendingTranscriptTimer) clearTimeout(pendingTranscriptTimer);
-
-    pendingTranscriptTimer = setTimeout(() => {
-        const entries = pendingTranscriptEntries;
-        pendingTranscriptEntries = [];
-        pendingTranscriptTimer = null;
-
-        const combined = entries.length === 1
-            ? entries[0].text
-            : entries.map((e) => `[${e.source}]: ${e.text}`).join('\n');
-
-        speakText(THINKING_FILLERS[thinkingFillerIndex], 'narrator');
-        thinkingFillerIndex = (thinkingFillerIndex + 1) % THINKING_FILLERS.length;
-
-        enqueueDmTurn(combined);
-    }, DM_TURN_DEBOUNCE_MS);
+    pendingTranscriptTimer = setTimeout(tryCommitPendingTranscript, DM_TURN_DEBOUNCE_MS);
 }
 
 const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
@@ -179,9 +224,9 @@ function saveLlmDebug(debugInfo) {
 // check is registered, so the requirement is always announced regardless of what was narrated.
 function announceCheckRequirement(character, skill, dc) {
     const announcement = `${character}, make a ${skill} check - you need to beat a DC of ${dc}.`;
-    console.log(`-> TTS Queueing (check announcement): "${announcement}"`);
     speakText(announcement, 'narrator');
     appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+    postToActiveChannel({ content: `🎲 ${announcement}` });
 }
 
 // Same rationale as announceCheckRequirement above, for an open group check (ai_provider.js
@@ -189,9 +234,26 @@ function announceCheckRequirement(character, skill, dc) {
 // specific characters, since unlike a solo check nobody in particular is required to respond.
 function announceOpenGroupCheckRequirement(skill, dc) {
     const announcement = `Everyone, make a ${skill} check if you'd like to try - you need to beat a DC of ${dc}.`;
-    console.log(`-> TTS Queueing (group check announcement): "${announcement}"`);
     speakText(announcement, 'narrator');
     appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+    postToActiveChannel({ content: `🎲 ${announcement}` });
+}
+
+// Text-only (no TTS) system notice whenever the active event changes - deliberately independent
+// of enqueueEventImage()'s async image job, which can fail, be disabled (ImageGenConfig.enabled),
+// or simply not have finished yet; without this, a status change (or a brand new event after one
+// resolves) would only ever reach Discord if that image happened to succeed. The narrator's own
+// dialogue this turn already covers the SAME change in-fiction, but only for resolved/escalated/
+// evolved on the event that just changed - a freshly generated NEXT event's description was never
+// spoken aloud at all (it's produced by a separate, later LLM call), so kind: 'new' fills a real
+// gap, not just decoration. Never called for "stable" - no status change, nothing to announce.
+function announceEventStatusChange(kind, event, resolutionSummary) {
+    const labels = { resolved: '📜 Event Resolved', escalated: '⚠️ Event Escalated', evolved: '🔄 Event Evolved', new: '📜 New Event' };
+    const label = labels[kind];
+    if (!label || !event) return;
+
+    const detail = kind === 'new' ? event.description : (resolutionSummary || event.currentState || event.description);
+    postToActiveChannel({ content: `${label} — **${event.title}**${detail ? `: ${detail}` : ''}` });
 }
 
 // An open group check waits out a fixed response window rather than reacting to the first roll -
@@ -323,6 +385,8 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
     const apiStartTime = Date.now();
     stats.llmCalls++;
 
+    console.log(`-> DM thinking... (model: ${activeModelName}, transcript: "${transcript.length > 80 ? transcript.slice(0, 80) + '...' : transcript}")`);
+
     try {
         const aiReply = await callModel(prompt);
         const latency = Date.now() - apiStartTime;
@@ -334,10 +398,15 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
         }
 
         if (aiReply) {
-            console.log('-> AI evaluation:', JSON.stringify(aiReply));
+            // Full raw reply already lands in llm_debug.json below (dashboard's Debug & RAG tab) -
+            // this is just a one-line "did something come back, and roughly what" console summary,
+            // not a duplicate full dump.
+            const checkNote = aiReply.checkSkill ? `, check: ${aiReply.checkCharacter || '?'} ${aiReply.checkSkill} DC ${aiReply.checkDc}` : '';
+            console.log(`-> DM responded in ${latency}ms (${aiReply.dialogue?.length || 0} dialogue line(s), event: ${aiReply.eventStatus || 'n/a'}${checkNote})`);
 
             if (aiReply.dialogue && Array.isArray(aiReply.dialogue)) {
                 const boundCharacterNames = new Set(getAllBoundCharacterNames().map((n) => n.trim().toLowerCase()));
+                const spokenThisTurn = [];
                 for (const segment of aiReply.dialogue) {
                     if (!segment || !segment.text) continue;
                     const speaker = segment.speaker || 'narrator';
@@ -353,32 +422,80 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                         continue;
                     }
 
-                    console.log(`-> TTS Queueing: "${segment.text}" [Speaker: ${speaker}]`);
                     speakText(segment.text, speaker, segment.voiceDescription);
                     appendTranscript(segment.text, `Dungeon Master (${speaker})`, Date.now());
+                    spokenThisTurn.push({ speaker, text: segment.text, voiceDescription: segment.voiceDescription });
 
-                    if (speaker.trim().toLowerCase() !== 'narrator') {
+                    const isNarrator = speaker.trim().toLowerCase() === 'narrator';
+                    let speakingEntity = isNarrator ? null : getEntityByName(speaker);
+
+                    // Backstop: guideline 10 asks the model to record every new NPC via
+                    // "worldEntities", but it doesn't always comply - without this, an NPC who
+                    // never got recorded that way could talk all campaign and never become
+                    // eligible for an image (enqueueEntityImage below needs an entity record to
+                    // build a prompt from). addWorldEntity() dedupes on name, so this is a no-op
+                    // (returns null) for every later line once they're known either way.
+                    if (!isNarrator && !speakingEntity) {
+                        const fallbackDescription = segment.voiceDescription
+                            ? `An NPC encountered during play. Voice: ${segment.voiceDescription}.`
+                            : 'An NPC encountered during play - no further description recorded yet.';
+                        speakingEntity = await addWorldEntity('npcs', speaker, fallbackDescription, false);
+                    }
+
+                    if (!isNarrator) {
                         const portrait = getEntityImage(speaker);
-                        const entity = getEntityByName(speaker);
                         if (!portrait) {
                             // Light retry: this NPC has no image yet (rate limit, or this is
-                            // their very first line before addWorldEntity's job even started) -
+                            // their very first line before the image job even started) -
                             // re-check their world record and re-enqueue if one exists.
                             // enqueueEntityImage() re-checks getEntityImage()/queue membership
                             // itself, so repeated calls across many lines before the image
                             // completes are harmless.
-                            if (entity) enqueueEntityImage(entity, entity.category || 'npcs');
+                            if (speakingEntity) enqueueEntityImage(speakingEntity, speakingEntity.category || 'npcs');
                         }
                         // Fire-and-forget - posting text-only when no portrait exists yet is the
                         // expected, correct behavior, not a bug to fix. Caption includes the
                         // entity's description alongside the spoken line so the image is never
                         // posted without the context that generated it.
-                        const caption = entity?.description ? `\n🎨 *${entity.description}*` : '';
+                        const caption = speakingEntity?.description ? `\n🎨 *${speakingEntity.description}*` : '';
                         postToActiveChannel({
                             content: `🗣️ **${speaker}:** ${segment.text}${caption}`,
                             files: portrait ? [{ attachment: path.join(TEMP_DATA_DIR, portrait.path), name: 'portrait.png' }] : []
                         });
+                    } else {
+                        // Guarantee every spoken line has a text equivalent in Discord - a narrator
+                        // segment used to only get posted if it happened to mention an entity with
+                        // an existing image (the "mentioned" loop below); plain narration with no
+                        // mentions never appeared in text at all. Unconditional now; the mentioned-
+                        // entity loop below still runs after this and may post the same text again
+                        // alongside an illustration - a little duplication is an acceptable trade
+                        // for every narrated line reliably having a Discord counterpart.
+                        postToActiveChannel({ content: segment.text });
                     }
+
+                    // Beyond the speaker themselves (handled above), post any OTHER already-known
+                    // entity this line's text mentions by name - a narrator line describing a
+                    // location, item, or NPC the party just encountered - so players see it the
+                    // moment the DM brings it up, not only when that entity is the one speaking.
+                    // Unlike the speaker case above, only post when an image already exists - a
+                    // passing mention isn't reason enough to spam text-only posts while one
+                    // generates, just enqueue it for next time.
+                    const mentioned = findMentionedEntities(segment.text).filter((e) => e.id !== speakingEntity?.id);
+                    for (const entity of mentioned) {
+                        const portrait = getEntityImage(entity.name);
+                        if (!portrait) {
+                            enqueueEntityImage(entity, entity.category || 'npcs');
+                            continue;
+                        }
+                        postToActiveChannel({
+                            content: `${segment.text}${entity.description ? `\n🎨 *${entity.description}*` : ''}`,
+                            files: [{ attachment: path.join(TEMP_DATA_DIR, portrait.path), name: 'portrait.png' }]
+                        });
+                    }
+                }
+
+                if (spokenThisTurn.length > 0) {
+                    lastSpokenTurn = spokenThisTurn;
                 }
             }
 
@@ -437,6 +554,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     });
                     currentEventData.activeEvent = null;
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                    announceEventStatusChange('resolved', resolvedEventForImage, aiReply.resolutionSummary);
 
                     generateNextEvent(
                         currentEventData.archivedEvents,
@@ -453,6 +571,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                             if (newEventObj && newEventObj.activeEvent) {
                                 currentEventData.activeEvent = newEventObj.activeEvent;
                                 fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                                announceEventStatusChange('new', newEventObj.activeEvent, null);
 
                                 if (newEventObj.linkedBackgroundEventId) {
                                     resolveBackgroundEventAsSurfaced(
@@ -478,6 +597,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     if (status === 'escalated' || status === 'evolved') {
                         currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
                         console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${currentEventData.activeEvent.complication}`);
+                        announceEventStatusChange(status, currentEventData.activeEvent, aiReply.resolutionSummary);
                     }
 
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
@@ -502,6 +622,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                 stats: stats
             });
         } else {
+            console.warn(`-> DM turn produced no reply after ${latency}ms (provider misconfigured or returned nothing usable).`);
             saveLlmDebug({
                 timestamp: new Date().toISOString(),
                 model: activeModelName,
@@ -579,7 +700,9 @@ async function handleSessionZeroInput(sourceLabel, transcript) {
     }
 
     if (!seed) {
-        speakText("Something went wrong generating the world. Please check the AI provider is configured and reachable, then start the campaign again.");
+        const failureMsg = "Something went wrong generating the world. Please check the AI provider is configured and reachable, then start the campaign again.";
+        speakText(failureMsg);
+        postToActiveChannel({ content: failureMsg });
         return;
     }
 
@@ -614,6 +737,7 @@ async function handleSessionZeroInput(sourceLabel, transcript) {
         console.log('-> Speaking campaign introduction...');
         speakText(seed.introLore, 'narrator');
         appendTranscript(seed.introLore, 'Dungeon Master (narrator)', Date.now());
+        postToActiveChannel({ content: seed.introLore });
     }
 
     pendingCampaignIntroLore = seed.introLore || null;
@@ -709,6 +833,11 @@ async function beginSessionOne(compiledIntros) {
             const eventPath = path.join(TEMP_DATA_DIR, 'current_event.json');
             fs.writeFileSync(eventPath, JSON.stringify({ activeEvent: eventObj.activeEvent, archivedEvents: [] }, null, 2), 'utf8');
 
+            // The opening scene never got an image before - every OTHER event-image trigger
+            // (escalated/evolved/resolved) lives in runDmTurn()'s event-status handling, but the
+            // very first event (created here, not there) never passed through that code.
+            enqueueEventImage(eventObj.activeEvent);
+
             if (eventObj.linkedBackgroundEventId) {
                 resolveBackgroundEventAsSurfaced(
                     eventObj.linkedBackgroundEventId,
@@ -720,6 +849,7 @@ async function beginSessionOne(compiledIntros) {
             console.log('-> Announcing opening event:', eventObj.activeEvent.title);
             speakText(announcement, 'narrator');
             appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+            postToActiveChannel({ content: announcement });
         }
     } catch (err) {
         console.warn('-> Failed to generate opening event:', err.message);
@@ -728,16 +858,20 @@ async function beginSessionOne(compiledIntros) {
     pendingCampaignIntroLore = null;
 }
 
-async function handleSilenceDriver() {
-    console.log('-> Sustained silence detected. Prompting DM AI to drive the narrative...');
+function handleSilenceDriver() {
+    // Reschedule unconditionally, before any early return below - otherwise a fire that lands
+    // while Session Zero/character intros are active (or while there's nothing yet to repeat)
+    // never requeues itself, permanently killing the repeat-on-silence chain for the rest of the
+    // session until some unrelated speech event happens to re-arm a fresh timer.
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
 
     if (isSessionZeroActive() || isCharacterIntroActive()) return;
 
-    const fakeTranscript = "(Players are silent and awaiting the Dungeon Master's lead)";
-    await enqueueDmTurn(fakeTranscript);
-
-    if (silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(handleSilenceDriver, SILENCE_TIMEOUT_MS);
+    console.log(`-> Sustained silence detected.${lastSpokenTurn.length > 0 ? ' Repeating the last thing the DM said.' : ' Nothing spoken yet this campaign - nothing to repeat.'}`);
+    for (const segment of lastSpokenTurn) {
+        speakText(segment.text, segment.speaker, segment.voiceDescription);
+    }
 }
 
 // Attributing a Dice Maiden roll to a player: prefer Discord's own interaction metadata
@@ -900,6 +1034,13 @@ client.once('clientReady', () => {
     // character_state.json's live HP/conditions/inventory. See ddb_import.js for details.
     refreshAllLinkedCharacters().catch((error) => {
         console.warn('-> Failed to refresh D&D Beyond-linked characters:', error.message);
+    });
+
+    // Best-effort, never blocks startup - synthesizes every fixed line that's ever spoken
+    // verbatim so the first real use during play hits a warm cache instead of paying Kokoro's
+    // synthesis latency in the moment. See voice_manager.js pregenerateStaticAudio().
+    pregenerateStaticAudio([...THINKING_FILLERS, SESSION_ZERO_PROMPT, CHARACTER_INTRO_PROMPT]).catch((error) => {
+        console.warn('-> Failed to pre-generate static TTS audio:', error.message);
     });
 });
 

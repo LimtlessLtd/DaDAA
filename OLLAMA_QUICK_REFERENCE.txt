@@ -6,10 +6,11 @@ TO USE OLLAMA (Local):
 1. Ensure Ollama is running: ollama serve
 2. Update config.json:
    "OllamaConfig": {
-     "enabled": true,
-     "baseUrl": "http://localhost:11434",
-     "model": "neural-chat"
-   }
+    "enabled": true,
+    "baseUrl": "http://localhost:11434",
+    "model": "qwen3.5",
+    "numCtx": 32768
+  }
 3. Restart the bot
 
 TO USE CLOUD LLM (Gemini/OpenAI/Claude):

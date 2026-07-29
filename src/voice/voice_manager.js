@@ -6,7 +6,8 @@ const { execFile } = require('child_process');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const { resolveSpeakerVoice } = require('./voice_registry');
+const crypto = require('crypto');
+const { resolveSpeakerVoice, NARRATOR_VOICE } = require('./voice_registry');
 
 const socketsByUser = new Map();
 let transcriptHandler = null;
@@ -18,6 +19,24 @@ const audioPlayer = createAudioPlayer();
 let currentVoiceConnection = null;
 let ttsQueue = [];
 let isPlayingTts = false;
+
+// Persistent cache for fixed, unchanging lines (THINKING_FILLERS, the Session Zero/character-intro
+// prompts) - deliberately NOT under temp_data/, since that's per-campaign save state that gets
+// wiped on "Start New Campaign" and this cache is neither. Keyed by a hash of the exact text (the
+// narrator voice is a fixed constant, see voice_registry.js NARRATOR_VOICE, so the same text always
+// synthesizes to the same audio) - generated once via pregenerateStaticAudio() and reused forever,
+// same "generate once, lock in" pattern as character_voices.json/entity_images.json.
+const STATIC_TTS_DIR = path.join(__dirname, '..', '..', 'tts_cache');
+
+function staticCachePath(text) {
+    const hash = crypto.createHash('sha1').update(text).digest('hex');
+    return path.join(STATIC_TTS_DIR, `${hash}.wav`);
+}
+
+function getStaticAudioPath(text) {
+    const cachePath = staticCachePath(text);
+    return fs.existsSync(cachePath) ? cachePath : null;
+}
 
 // Determine python command based on OS
 const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
@@ -193,6 +212,35 @@ function synthesizeViaTtsServer(text, voiceSpec) {
     });
 }
 
+// Best-effort, called once at bot startup with every fixed line that's ever spoken verbatim
+// (THINKING_FILLERS, the Session Zero/character-intro prompts) - synthesizes and caches whichever
+// ones aren't already cached from a previous run, so the FIRST time any of them is actually needed
+// during play, processTtsQueue() below finds it already sitting on disk instead of paying Kokoro's
+// synthesis latency in the moment. Skips ones already cached (idempotent - safe to call every
+// startup). Never throws - a synthesis failure here (e.g. core_server.py not up yet) just means
+// that one line falls back to the normal dynamic path the first time it's actually spoken, same as
+// if this had never run at all.
+async function pregenerateStaticAudio(lines) {
+    const uniqueLines = [...new Set((lines || []).filter(Boolean))];
+    if (uniqueLines.length === 0) return;
+
+    fs.mkdirSync(STATIC_TTS_DIR, { recursive: true });
+    let generated = 0;
+    for (const text of uniqueLines) {
+        if (getStaticAudioPath(text)) continue; // already cached from a previous run
+        try {
+            const wavBuffer = await synthesizeViaTtsServer(text, NARRATOR_VOICE);
+            fs.writeFileSync(staticCachePath(text), wavBuffer);
+            generated++;
+        } catch (e) {
+            console.warn(`-> Failed to pre-generate static TTS audio for "${text.slice(0, 40)}...":`, e.message);
+        }
+    }
+    if (generated > 0) {
+        console.log(`-> Pre-generated ${generated} static TTS audio file(s).`);
+    }
+}
+
 // Fallback path: the old per-process gTTS/pyttsx3 script, kept only for when the Kokoro server
 // isn't running yet (e.g. first run before `pip install -r requirements.txt` + espeak-ng setup).
 // It only knows the old fixed profile names, so a dynamic voice blend is collapsed down to
@@ -221,14 +269,31 @@ function synthesizeViaLegacyScript(text, tempAudioPath, profile) {
 }
 
 async function processTtsQueue() {
-    console.log("processing TTS Queue");
-
     if (isPlayingTts || ttsQueue.length === 0 || !currentVoiceConnection) return;
 
     isPlayingTts = true;
     const item = ttsQueue.shift();
     const text = item.text;
+    const speakerLabel = (!item.speaker || item.speaker.trim().toLowerCase() === 'narrator') ? 'narrator' : item.speaker;
+    console.log(`-> Speaking as ${speakerLabel}: "${text}"`);
     const voiceSpec = resolveSpeakerVoice(item.speaker, item.voiceDescription);
+
+    // Skip synthesis entirely for a pre-generated static line (THINKING_FILLERS, Session Zero/
+    // character-intro prompts - see pregenerateStaticAudio()) - only ever checked for narrator-
+    // voiced text, since that's all the cache ever contains; an NPC line happening to match one
+    // verbatim would still be wrong to play in the narrator's voice.
+    const isNarrator = !item.speaker || item.speaker.trim().toLowerCase() === 'narrator';
+    const cachedPath = isNarrator ? getStaticAudioPath(text) : null;
+    if (cachedPath) {
+        try {
+            audioPlayer.play(createAudioResource(cachedPath));
+        } catch (e) {
+            console.error('-> Cached audio playback error:', e.message);
+            isPlayingTts = false;
+            processTtsQueue();
+        }
+        return;
+    }
 
     const tempAudioPath = path.join(__dirname, '..', '..', 'temp_data', `tts_${Date.now()}.wav`);
     const dataDir = path.dirname(tempAudioPath);
@@ -270,4 +335,4 @@ function stopSpeaking() {
     audioPlayer.stop(true);
 }
 
-module.exports = { joinAndListen, speakText, stopSpeaking };
+module.exports = { joinAndListen, speakText, stopSpeaking, pregenerateStaticAudio };

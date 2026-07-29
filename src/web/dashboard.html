@@ -1073,7 +1073,7 @@
     });
 
     // --- LLM Telemetry & Debug Mode ---
-        async function loadDebugData() {
+    async function loadDebugData() {
       if (currentTab !== 'debug') return;
       try {
         const debug = await fetch('/temp_data/llm_debug.json').then((r) => r.json());
@@ -1128,15 +1128,17 @@
       }
     }
 
-        setInterval(() => {
-      console.log(`-> Auto-refreshing dashboard at ${new Date().toLocaleTimeString()}`); // Debug log
-      loadData();
-      if (currentTab === 'debug') loadDebugData();
+      setInterval(() => {
+        console.log(`-> Auto-refreshing dashboard at ${new Date().toLocaleTimeString()}`); // Debug log
+        loadData();
+        if (currentTab === 'debug') 
+          loadDebugData();
     }, 3000);
-    setInterval(loadCharacterLogs, 5000);
+
+    setInterval(loadCharacterLogs, 2500);
     setInterval(populateDropdowns, 10000);
     setInterval(loadCampaignIntro, 5000);
-    setInterval(loadWorldEntities, 5000);
+    setInterval(loadWorldEntities, 30000);
 
     document.getElementById('worldEntityFilter').addEventListener('change', renderWorldEntities);
 
