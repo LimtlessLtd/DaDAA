@@ -161,6 +161,92 @@
     .tab-content.active {
       display: block;
     }
+
+    /* Performance tab - stage colors are FIXED across every chart on this tab (validated
+       colorblind-safe categorical set): STT -> RAG -> LLM -> reply-to-audio, in pipeline order. */
+    :root {
+      --stage-stt: #3987e5;
+      --stage-rag: #d95926;
+      --stage-llm: #199e70;
+      --stage-tts: #c98500;
+    }
+    .stat-tile {
+      background: #0f172a;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+    }
+    .stat-tile-label {
+      font-size: 0.65rem;
+      color: #64748b;
+      text-transform: uppercase;
+      font-weight: bold;
+      letter-spacing: 0.05em;
+    }
+    .stat-tile-value {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-top: 4px;
+    }
+    .legend-row {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+      font-size: 0.75rem;
+      color: #94a3b8;
+    }
+    .legend-swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+    .avg-bar-row {
+      display: grid;
+      grid-template-columns: 90px 1fr 70px;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      font-size: 0.8rem;
+    }
+    .avg-bar-track {
+      background: #0f172a;
+      border-radius: 4px;
+      height: 14px;
+      overflow: hidden;
+    }
+    .avg-bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      min-width: 3px;
+    }
+    .turn-row {
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #1e293b;
+    }
+    .turn-row-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
+      color: #64748b;
+      margin-bottom: 4px;
+    }
+    .turn-bar-track {
+      display: flex;
+      height: 16px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #0f172a;
+      gap: 2px;
+    }
+    .turn-bar-segment {
+      height: 100%;
+      min-width: 2px;
+    }
   </style>
 </head>
 <body>
@@ -177,6 +263,7 @@
       <button class="tab-button active" data-tab="dashboard">Dashboard</button>
       <button class="tab-button" data-tab="world">World Setting</button>
       <button class="tab-button" data-tab="debug">Debug &amp; RAG</button>
+      <button class="tab-button" data-tab="performance">Performance</button>
     </div>
 
     <!-- World Setting Tab -->
@@ -369,6 +456,69 @@
             <span id="debugResponseSectionIcon">▼</span>
           </button>
           <pre id="debugResponseSection" style="display: none; background: #0f172a; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; margin-top: 8px; color: #10b981; max-height: 200px; overflow-y: auto;"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Performance Tab -->
+    <div id="tab-performance" class="tab-content">
+      <!-- Live workflow status -->
+      <div class="panel">
+        <div class="panel-title">Live Workflow Status</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px;">
+          <div class="stat-tile">
+            <div class="stat-tile-label">DM Turn</div>
+            <div class="stat-tile-value" id="perfTurnStatus">-</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">TTS Queue</div>
+            <div class="stat-tile-value" id="perfTtsQueue">-</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Image Gen Queue</div>
+            <div class="stat-tile-value" id="perfImageQueue">-</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Pending Dice Checks</div>
+            <div class="stat-tile-value" id="perfPendingChecks">-</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Active Background Threads</div>
+            <div class="stat-tile-value" id="perfBackgroundThreads">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Average latency per stage -->
+      <div class="panel" style="margin-top: 16px;">
+        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+          Average Latency by Stage
+          <span style="font-size: 0.7rem; color: #64748b; text-transform: none;" id="perfSampleCounts">-</span>
+        </div>
+        <div id="perfAvgBars">
+          <div style="color: #64748b; font-size: 0.85rem;">No turns recorded yet.</div>
+        </div>
+      </div>
+
+      <!-- Recent turn breakdown -->
+      <div class="panel" style="margin-top: 16px;">
+        <div class="panel-title">Recent Turn Latency Breakdown</div>
+        <div class="legend-row">
+          <span><span class="legend-swatch" style="background: var(--stage-rag);"></span>RAG</span>
+          <span><span class="legend-swatch" style="background: var(--stage-llm);"></span>LLM</span>
+          <span><span class="legend-swatch" style="background: var(--stage-tts);"></span>Reply-to-audio</span>
+          <span style="color: #64748b;">Bar length is scaled relative to the slowest turn shown - hover a segment for exact ms.</span>
+        </div>
+        <div id="perfTurnsList" style="max-height: 420px; overflow-y: auto;">
+          <div style="color: #64748b; font-size: 0.85rem;">No turns recorded yet.</div>
+        </div>
+      </div>
+
+      <!-- Recent STT latency -->
+      <div class="panel" style="margin-top: 16px;">
+        <div class="panel-title">Recent Transcription (STT) Latency</div>
+        <div id="perfUtterancesList" style="max-height: 220px; overflow-y: auto;">
+          <div style="color: #64748b; font-size: 0.85rem;">No utterances recorded yet.</div>
         </div>
       </div>
     </div>
@@ -1066,6 +1216,7 @@
         el.classList.toggle('active', el.id === 'tab-' + tab);
       });
       if (tab === 'debug') loadDebugData();
+      if (tab === 'performance') loadPerformanceData();
     }
 
     document.querySelectorAll('.tab-button').forEach((btn) => {
@@ -1128,11 +1279,163 @@
       }
     }
 
+    // --- Performance tab: turn-latency history, STT-latency history, live queue/workflow status.
+    // See src/telemetry/telemetry_manager.js for how each field is gathered server-side.
+    const STAGE_COLORS = {
+      stt: 'var(--stage-stt)',
+      rag: 'var(--stage-rag)',
+      llm: 'var(--stage-llm)',
+      tts: 'var(--stage-tts)'
+    };
+
+    async function loadPerformanceData() {
+      if (currentTab !== 'performance') return;
+      try {
+        const res = await fetch('/api/telemetry');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderLiveStatus(data.live);
+        renderAvgBars(data.turns.aggregates, data.utterances.aggregates);
+        renderRecentTurns(data.turns.entries);
+        renderRecentUtterances(data.utterances.entries);
+      } catch (e) {
+        console.warn('Failed to load performance telemetry', e);
+      }
+    }
+
+    function renderLiveStatus(live) {
+      if (!live) return;
+
+      const turnEl = document.getElementById('perfTurnStatus');
+      if (live.dmTurnInFlight) {
+        turnEl.textContent = `In flight${live.pendingTranscriptCount ? ` (+${live.pendingTranscriptCount} buffered)` : ''}`;
+        turnEl.style.color = '#f59e0b';
+      } else {
+        turnEl.textContent = 'Idle';
+        turnEl.style.color = '#10b981';
+      }
+
+      const tts = live.ttsQueue || {};
+      const ttsEl = document.getElementById('perfTtsQueue');
+      ttsEl.textContent = `${tts.queueLength || 0} queued, ${tts.isPlaying ? 'playing' : 'idle'}${tts.hasPrefetch ? ' (prefetching next)' : ''}`;
+      ttsEl.style.color = (tts.isPlaying || tts.queueLength) ? '#3b82f6' : '#94a3b8';
+
+      const img = live.imageGenQueue || {};
+      const imgEl = document.getElementById('perfImageQueue');
+      if (img.enabled === false) {
+        imgEl.textContent = 'Disabled';
+        imgEl.style.color = '#64748b';
+      } else {
+        imgEl.textContent = `${img.queueLength || 0} queued, ${img.isProcessing ? 'rendering' : 'idle'}`;
+        imgEl.style.color = (img.isProcessing || img.queueLength) ? '#f59e0b' : '#94a3b8';
+      }
+
+      const checksEl = document.getElementById('perfPendingChecks');
+      checksEl.textContent = `${live.pendingChecksCount || 0}${live.openGroupCheckActive ? ' + group check open' : ''}`;
+      checksEl.style.color = (live.pendingChecksCount || live.openGroupCheckActive) ? '#f59e0b' : '#94a3b8';
+
+      const bgEl = document.getElementById('perfBackgroundThreads');
+      bgEl.textContent = String(live.activeBackgroundEventsCount || 0);
+      bgEl.style.color = '#8b5cf6';
+    }
+
+    function renderAvgBars(turnAgg, utteranceAgg) {
+      const container = document.getElementById('perfAvgBars');
+      const sampleCounts = document.getElementById('perfSampleCounts');
+      if (!turnAgg || (turnAgg.count === 0 && (!utteranceAgg || utteranceAgg.count === 0))) {
+        container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem;">No turns recorded yet.</div>';
+        sampleCounts.textContent = '';
+        return;
+      }
+
+      sampleCounts.textContent = `${turnAgg.count} turn(s), ${utteranceAgg.count} utterance(s) tracked`;
+
+      const rows = [
+        { label: 'STT', ms: utteranceAgg.avgSttMs, color: STAGE_COLORS.stt },
+        { label: 'RAG', ms: turnAgg.avgRagMs, color: STAGE_COLORS.rag },
+        { label: 'LLM', ms: turnAgg.avgLlmMs, color: STAGE_COLORS.llm },
+        { label: 'Reply-to-audio', ms: turnAgg.avgTtsStartMs, color: STAGE_COLORS.tts }
+      ];
+      const maxMs = Math.max(...rows.map((r) => r.ms), 1);
+
+      container.innerHTML = rows.map((r) => `
+        <div class="avg-bar-row">
+          <span style="color: #cbd5e1;">${escapeHtml(r.label)}</span>
+          <div class="avg-bar-track">
+            <div class="avg-bar-fill" style="width: ${r.ms > 0 ? Math.max((r.ms / maxMs) * 100, 2) : 0}%; background: ${r.color};" title="${r.ms}ms average"></div>
+          </div>
+          <span style="text-align: right; color: #94a3b8;">${r.ms}ms</span>
+        </div>
+      `).join('');
+    }
+
+    function renderRecentTurns(entries) {
+      const container = document.getElementById('perfTurnsList');
+      if (!entries || entries.length === 0) {
+        container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem;">No turns recorded yet.</div>';
+        return;
+      }
+
+      const recent = entries.slice(-20).reverse();
+      const maxTotal = Math.max(...recent.map((e) => e.totalMs || 0), 1);
+
+      container.innerHTML = recent.map((e) => {
+        const segments = [
+          { ms: e.ragLatencyMs, color: STAGE_COLORS.rag, label: 'RAG' },
+          { ms: e.llmLatencyMs, color: STAGE_COLORS.llm, label: 'LLM' },
+          { ms: e.ttsStartLatencyMs, color: STAGE_COLORS.tts, label: 'Reply-to-audio' }
+        ];
+        const barWidthPct = Math.max((e.totalMs / maxTotal) * 100, 4);
+        const segmentsHtml = segments.map((s) => {
+          const widthPct = e.totalMs > 0 ? (s.ms / e.totalMs) * 100 : 0;
+          if (widthPct <= 0) return '';
+          return `<div class="turn-bar-segment" style="width: ${widthPct}%; background: ${s.color};" title="${escapeHtml(s.label)}: ${s.ms}ms"></div>`;
+        }).join('');
+
+        const preview = String(e.transcriptPreview || '');
+        const shortPreview = preview.length > 60 ? preview.slice(0, 60) + '…' : preview;
+
+        return `
+          <div class="turn-row">
+            <div class="turn-row-meta">
+              <span>${escapeHtml(new Date(e.timestamp).toLocaleTimeString())} - "${escapeHtml(shortPreview)}"</span>
+              <span>${e.totalMs}ms total</span>
+            </div>
+            <div class="turn-bar-track" style="width: ${barWidthPct}%;">
+              ${segmentsHtml}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderRecentUtterances(entries) {
+      const container = document.getElementById('perfUtterancesList');
+      if (!entries || entries.length === 0) {
+        container.innerHTML = '<div style="color: #64748b; font-size: 0.85rem;">No utterances recorded yet.</div>';
+        return;
+      }
+
+      const recent = entries.slice(-15).reverse();
+      container.innerHTML = recent.map((e) => `
+        <div class="item" style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+          <div style="min-width: 0; flex: 1;">
+            <strong style="color: #3b82f6;">${escapeHtml(e.source || 'Unknown')}</strong>
+            <span style="color: #64748b; font-size: 0.7rem; margin-left: 6px;">${escapeHtml(new Date(e.timestamp).toLocaleTimeString())}</span>
+            <div style="color: #94a3b8; font-size: 0.8rem; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">"${escapeHtml(e.transcriptPreview || '')}"</div>
+          </div>
+          <div style="flex-shrink: 0; font-weight: 700; color: var(--stage-stt);">${e.sttLatencyMs}ms</div>
+        </div>
+      `).join('');
+    }
+
       setInterval(() => {
         console.log(`-> Auto-refreshing dashboard at ${new Date().toLocaleTimeString()}`); // Debug log
         loadData();
-        if (currentTab === 'debug') 
+        if (currentTab === 'debug')
           loadDebugData();
+        if (currentTab === 'performance')
+          loadPerformanceData();
     }, 3000);
 
     setInterval(loadCharacterLogs, 2500);

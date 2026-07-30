@@ -3,8 +3,8 @@
   "OllamaConfig": {
     "enabled": true,
     "baseUrl": "http://localhost:11434",
-    "model": "qwen3.5",
-    "numCtx": 32768
+    "model": "qwen3.5:4b",
+    "numCtx": 16384
   },
   "DiceMaidenTag": "Dice Maiden#9678",
   "ImageGenConfig": {
@@ -15,7 +15,7 @@
     "utteranceInterval": 25
   },
   "GroupCheckConfig": {
-    "timeoutMs": 120000
+    "timeoutMs": 125000
   },
   "SilenceDriverConfig": {
     "timeoutMs": 60000

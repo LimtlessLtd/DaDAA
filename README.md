@@ -24,7 +24,7 @@ A Discord bot that acts as an AI Dungeon Master for Dungeons & Dragons games.
 Ollama is the **default and recommended** provider when enabled. To use Ollama:
 
 1. Install Ollama from [ollama.ai](https://ollama.ai)
-2. Pull a model: `ollama pull qwen3.5` (or other compatible models)
+2. Pull a model: `ollama pull qwen3.5:4b` (or other compatible models - see the VRAM note below before using the bare `qwen3.5` tag)
 3. Ensure Ollama is running by going to the correct local URL (usually `http://localhost:11434`)
 4. Ensure your `config.json` looks like the following:
 
@@ -34,8 +34,8 @@ Ollama is the **default and recommended** provider when enabled. To use Ollama:
   "OllamaConfig": {
     "enabled": true,
     "baseUrl": "http://localhost:11434",
-    "model": "qwen3.5",
-    "numCtx": 32768
+    "model": "qwen3.5:4b",
+    "numCtx": 16384
   },
   "DiceMaidenTag": "Dice Maiden#9678",
   "ImageGenConfig": {
@@ -53,6 +53,8 @@ Ollama is the **default and recommended** provider when enabled. To use Ollama:
   }
 }
 ```
+
+**On model choice and VRAM**: the bare `qwen3.5` tag resolves to `qwen3.5:latest`, a 9.7B-parameter model - benchmarked on a 6GB-VRAM card (RTX 2060), only about half of it fit in VRAM (`ollama ps` showed ~3.5GB/6.7GB resident), with the rest silently falling back to much slower CPU inference every turn (~6.5 tokens/sec measured). `qwen3.5:4b` fit entirely in the same 6GB (~3.6GB resident) and measured ~65 tokens/sec - roughly **10x faster** - for a smaller, less capable model. If you have more VRAM to spare, `qwen3.5:latest` (or another larger model) may be worth it for narration quality; on a card this size, `qwen3.5:4b` is the faster and safer default. Whichever you pick, check `ollama ps` while the bot is running a turn to confirm the model you configured actually fits in VRAM - a model that doesn't fit will still work, just much slower, with no error to warn you.
 
 ### Cloud Provider Fallback
 

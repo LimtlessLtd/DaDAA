@@ -93,7 +93,13 @@ cleanup_port 8000 index.js
 mkdir -p logs
 
 echo "Starting Core Server (RAG + Transcription + TTS)..."
-"${PYTHON_EXE}" server/core_server.py > logs/core_server.log 2>&1 &
+# Image generation (Stable Diffusion) shares the same GPU as Ollama - on a card small enough that
+# the LLM doesn't comfortably fit alongside it (see CLAUDE.md's numCtx/model-size notes), leaving
+# Stable Diffusion on GPU measurably slows every single LLM turn, not just image jobs. Image posts
+# are already fire-and-forget/rate-limited and never block conversation, so forcing this to CPU
+# trades slower (but still working) portraits/event images for full GPU throughput on the
+# turn-critical LLM path. Unset this (or set to "cuda") to put images back on GPU.
+IMAGEGEN_DEVICE=cpu "${PYTHON_EXE}" server/core_server.py > logs/core_server.log 2>&1 &
 CORE_PID=$!
 if command -v disown >/dev/null 2>&1; then disown ${CORE_PID} 2>/dev/null || true; fi
 

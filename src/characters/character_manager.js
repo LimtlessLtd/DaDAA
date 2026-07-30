@@ -125,13 +125,6 @@ function unbindCharacter(discordUser, characterName) {
     saveCharacterMap(map);
 }
 
-function getCharacterMapString() {
-    const map = loadCharacterMap();
-    const entries = Object.entries(map);
-    if (entries.length === 0) return 'No players mapped yet.';
-    return entries.map(([user, chars]) => `${user} -> ${chars.join(', ')}`).join('\n');
-}
-
 // Flat, de-duplicated list of every character name currently bound to a Discord user, regardless
 // of which player - used as a backstop to stop the DM from ever voicing/narrating as a player
 // character (see index.js runDmTurn()'s dialogue loop): the LLM prompt tells it never to use a
@@ -221,17 +214,19 @@ function addPlayerLog(discordUser, message) {
     savePlayerLogs(logs);
 }
 
+// discordUser is deliberately omitted here - "log" already names the character involved (e.g.
+// "Started playing as character: X"), and this string goes straight into the LLM prompt, which
+// should never need a raw Discord username (see buildPrompt() - no more character-map lookup).
 function getPlayerLogsString() {
     const logs = loadPlayerLogs();
     if (logs.length === 0) return 'No player logs recorded yet.';
-    return logs.slice(-15).map(l => `[${new Date(l.timestamp).toLocaleString()}] ${l.discordUser}: ${l.log}`).join('\n');
+    return logs.slice(-15).map(l => `[${new Date(l.timestamp).toLocaleString()}] ${l.log}`).join('\n');
 }
 
 module.exports = {
     loadCharacterMap,
     bindCharacter,
     unbindCharacter,
-    getCharacterMapString,
     getBoundCharacterName,
     getAllBoundCharacterNames,
     loadCharacterLogs,

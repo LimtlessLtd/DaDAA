@@ -25,6 +25,7 @@ const { clearImageQueue } = require('../images/image_gen_manager');
 const { getEntityImage } = require('../images/entity_image_registry');
 const { linkCharacter, refreshCharacter, loadDdbCharacters } = require('../characters/ddb_import');
 const { loadCharacterState, initializeStateFromSheet, reconcileMaxHp } = require('../characters/character_state_manager');
+const { getTurnTelemetry, getUtteranceTelemetry, getLiveStatus } = require('../telemetry/telemetry_manager');
 
 const UI_ROOT = __dirname;
 const TEMP_DATA_ROOT = path.join(__dirname, '..', '..', 'temp_data');
@@ -227,6 +228,21 @@ function startWebEditor() {
                 } catch (err) {
                     sendJson(res, 500, { error: err.message });
                 }
+                return;
+            }
+        }
+
+        // Backs the dashboard's Performance tab - turn-latency history (RAG/LLM/reply-to-audio/
+        // total per DM turn), STT-latency history per transcribed utterance, and a live snapshot
+        // of in-flight work (queue depths, whether a turn is running). See
+        // src/telemetry/telemetry_manager.js for how each is gathered.
+        if (pathname === '/api/telemetry') {
+            if (req.method === 'GET') {
+                sendJson(res, 200, {
+                    turns: getTurnTelemetry(),
+                    utterances: getUtteranceTelemetry(),
+                    live: getLiveStatus()
+                });
                 return;
             }
         }

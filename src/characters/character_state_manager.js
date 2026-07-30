@@ -136,7 +136,7 @@ function applyStateChanges(changes) {
 }
 
 // Formats every tracked character's current status for prompt injection - same convention as
-// character_manager.js's getCharacterMapString()/getPlayerLogsString().
+// character_manager.js's getPlayerLogsString().
 function getCharacterStateString() {
     const state = loadCharacterState();
     const entries = Object.entries(state);

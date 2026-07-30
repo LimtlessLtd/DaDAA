@@ -20,7 +20,19 @@ class TranscriptionEngine:
     )
 
     def __init__(self, model_name=None, device=None, compute_type=None):
-        model_name = model_name or os.environ.get("WHISPER_MODEL", "medium")
+        # Phase 6 benchmarked tiny/base/small/medium on this hardware (CPU, int8) using
+        # Kokoro-synthesized D&D-flavored test lines as known-ground-truth audio: word error rate
+        # was statistically tied across tiny/base/small (~0.11-0.12, mostly invented-fantasy-name
+        # garbling) while medium was modestly more accurate (~0.07) at a steep cost (~5.2s/line vs
+        # ~1.9s for small, ~0.7s for base, ~0.5s for tiny) - and STT sits on the critical path
+        # before the debounce timer even starts, so that latency is pure added wait before a turn
+        # can begin. Went with "base" over "small" once the LLM stage stopped dominating total turn
+        # time (see OllamaConfig.model in config.json/README.md) - at that point STT became a much
+        # bigger relative share of total latency, and tiny/base/small's tied WER in this test no
+        # longer justified paying small's ~2.7x latency premium over base for no measured accuracy
+        # gain. Override via WHISPER_MODEL (e.g. back to "small") if real (noisier) Discord audio
+        # shows base degrading more than this clean synthetic test suggests.
+        model_name = model_name or os.environ.get("WHISPER_MODEL", "base")
         device = device or os.environ.get("WHISPER_DEVICE", "cpu")
         compute_type = compute_type or os.environ.get("WHISPER_COMPUTE", "int8")
 

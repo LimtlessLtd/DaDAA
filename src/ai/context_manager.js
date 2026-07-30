@@ -240,9 +240,15 @@ function resetWorldCache() {
     exactNameCache.clear();
 }
 
+// Phase 6 profiled this call end-to-end (index.js runDmTurn's ragLatencyMs, part of the "Turn
+// latency breakdown" log): steady-state query latency against the real chroma_db (embedding the
+// query text + ChromaDB's HNSW search, RagService.query in server/services/rag_service.py) measured
+// ~28ms - completely dwarfed by the LLM stage, which runs to multiple seconds. Not a meaningful
+// share of total turn latency, so no caching/trimming was added - re-profile via the same log line
+// before adding any, rather than assuming this has become a bottleneck.
 async function findRelevantRecords(text) {
     if (!text || text.trim().length === 0) return [];
-    
+
     const sessionState = loadSessionState();
     let queryText = text;
     

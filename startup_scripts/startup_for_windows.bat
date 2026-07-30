@@ -29,6 +29,14 @@ call :CleanupPort 8768 server\core_server.py
 echo Checking for stale bot server on port 8000...
 call :CleanupPort 8000 index.js
 
+REM Image generation (Stable Diffusion) shares the same GPU as Ollama - on a card small enough
+REM that the LLM doesn't comfortably fit alongside it (see CLAUDE.md's numCtx/model-size notes),
+REM leaving Stable Diffusion on GPU measurably slows every single LLM turn, not just image jobs.
+REM Image posts are already fire-and-forget/rate-limited and never block conversation, so forcing
+REM this to CPU trades slower (but still working) portraits/event images for full GPU throughput
+REM on the turn-critical LLM path. Remove this line (or set it to "cuda") to put images back on GPU.
+set "IMAGEGEN_DEVICE=cpu"
+
 start "Core Server (RAG + Transcription + TTS)" cmd /k "%PYTHON_EXE% server\core_server.py"
 
 echo Waiting for core server to initialize (loads whisper/sentence-transformers/Kokoro - can take a while on a cold cache)...

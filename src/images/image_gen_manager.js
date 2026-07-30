@@ -213,10 +213,25 @@ function requestImage(prompt, { width, height, negativePrompt } = {}) {
     });
 }
 
+// Live snapshot for the dashboard's Performance tab - current state, not history. queuedKinds is
+// a short human-readable label per queued (not-yet-dispatched) job, so the dashboard can show
+// "what's waiting" without needing to know this module's internal job-shape.
+function getQueueStatus() {
+    return {
+        queueLength: imageQueue.length,
+        isProcessing: isProcessingQueue,
+        enabled: imageGenEnabled(),
+        minIntervalMs: config.ImageGenConfig?.minIntervalMs ?? 240000,
+        msSinceLastDispatch: lastDispatchAt ? Date.now() - lastDispatchAt : null,
+        queuedKinds: imageQueue.map((j) => j.kind === 'event_image' ? `event: ${j.activeEvent?.title || '?'}` : `entity: ${j.entity?.name || '?'}`)
+    };
+}
+
 module.exports = {
     enqueueEntityImage,
     enqueueEventImage,
     setActiveTextChannel,
     postToActiveChannel,
-    clearImageQueue
+    clearImageQueue,
+    getQueueStatus
 };

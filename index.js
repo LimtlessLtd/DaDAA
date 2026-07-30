@@ -35,6 +35,7 @@ const {
     buildEventTieInContext
 } = require('./src/sessions/background_event_manager');
 const { startWebEditor } = require('./src/web/web_editor');
+const { recordTurnLatency, recordUtteranceLatency, registerLiveStatusProvider } = require('./src/telemetry/telemetry_manager');
 const {
     isSessionZeroActive,
     addSessionZeroInput,
@@ -58,7 +59,6 @@ const { isDiceMaidenMessage, parseDiceMaidenRoll, isDiceMaidenError } = require(
 const {
     bindCharacter,
     unbindCharacter,
-    getCharacterMapString,
     addCharacterLogs,
     loadCharacterLogs,
     recordDiscordUser,
@@ -180,6 +180,15 @@ let thinkingFillerIndex = 0;
 let pendingTranscriptEntries = [];
 let pendingTranscriptTimer = null;
 
+// Lets the dashboard's Performance tab report DM-turn-queue state without telemetry_manager.js
+// (required by web_editor.js, which this file requires) needing to require this file back -
+// mirrors image_gen_manager.js's setActiveTextChannel push-state-in pattern. The closure reads
+// dmTurnInFlight/pendingTranscriptEntries fresh on every call, not a one-time snapshot.
+registerLiveStatusProvider(() => ({
+    dmTurnInFlight,
+    pendingTranscriptCount: pendingTranscriptEntries.length
+}));
+
 function tryCommitPendingTranscript() {
     if (dmTurnInFlight) {
         pendingTranscriptTimer = setTimeout(tryCommitPendingTranscript, DM_TURN_INFLIGHT_POLL_MS);
@@ -191,9 +200,11 @@ function tryCommitPendingTranscript() {
     pendingTranscriptTimer = null;
     if (entries.length === 0) return;
 
-    const combined = entries.length === 1
-        ? entries[0].text
-        : entries.map((e) => `[${e.source}]: ${e.text}`).join('\n');
+    // Always speaker-tagged, even for a single entry - source is already resolved to the
+    // bound character name (or the raw Discord username, if unbound) before it ever reaches
+    // here, so the LLM sees only character names in the transcript and never needs a separate
+    // Discord-user-to-character lookup table of its own (see buildPrompt()).
+    const combined = entries.map((e) => `[${e.source}]: ${e.text}`).join('\n');
 
     speakText(THINKING_FILLERS[thinkingFillerIndex], 'narrator');
     thinkingFillerIndex = (thinkingFillerIndex + 1) % THINKING_FILLERS.length;
@@ -205,6 +216,25 @@ function queueDmTranscript(source, transcript) {
     pendingTranscriptEntries.push({ source, text: transcript });
     if (pendingTranscriptTimer) clearTimeout(pendingTranscriptTimer);
     pendingTranscriptTimer = setTimeout(tryCommitPendingTranscript, DM_TURN_DEBOUNCE_MS);
+}
+
+// Deterministic backstop for narratorPersona's "one short sentence" instruction
+// (ai_provider.js generateCampaignSeed) - local models don't always comply, and this value gets
+// injected into EVERY turn's prompt for the rest of the campaign, so a model that pads it into a
+// paragraph silently bloats every single prompt from then on, not just this one generation call.
+// Keeps up to the first sentence-ending punctuation; a response with no punctuation at all (rare)
+// falls back to a hard character cap rather than being left unbounded.
+const NARRATOR_PERSONA_MAX_CHARS = 160;
+function capToFirstSentence(text) {
+    const trimmed = String(text || '').trim();
+    const match = trimmed.match(/^[^.!?]*[.!?]/);
+    let sentence = match ? match[0].trim() : trimmed;
+    if (sentence.length > NARRATOR_PERSONA_MAX_CHARS) {
+        const cut = sentence.slice(0, NARRATOR_PERSONA_MAX_CHARS);
+        const lastSpace = cut.lastIndexOf(' ');
+        sentence = (lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim() + '…';
+    }
+    return sentence;
 }
 
 const LLM_DEBUG_PATH = path.join(TEMP_DATA_DIR, 'llm_debug.json');
@@ -328,7 +358,9 @@ async function runDmTurn(transcript) {
     // top of the fresh campaign. See src/sessions/campaign_epoch.js.
     const epochAtStart = getCampaignEpoch();
 
+    const turnStart = Date.now();
     const relevantRecords = await findRelevantRecords(transcript);
+    const ragLatencyMs = Date.now() - turnStart;
     const sessionState = loadSessionState();
 
     let currentEventString = '';
@@ -361,10 +393,9 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
     `.trim();
 
     const rollingSummary = getRollingSummary();
-    const characterMapStr = getCharacterMapString();
     const playerLogsStr = getPlayerLogsString();
     const characterStateStr = getCharacterStateString();
-    const prompt = buildPrompt(transcript, contextString, rollingSummary, characterMapStr, currentEventString, playerLogsStr, narratorPersona, characterStateStr);
+    const prompt = buildPrompt(transcript, contextString, rollingSummary, currentEventString, playerLogsStr, narratorPersona, characterStateStr);
 
     const activeModelName = config.OllamaConfig?.enabled
         ? config.OllamaConfig?.model || 'neural-chat'
@@ -390,6 +421,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
     try {
         const aiReply = await callModel(prompt);
         const latency = Date.now() - apiStartTime;
+        const aiReplyReceivedAt = Date.now();
         stats.lastLatencyMs = latency;
 
         if (epochAtStart !== getCampaignEpoch()) {
@@ -407,6 +439,11 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
             if (aiReply.dialogue && Array.isArray(aiReply.dialogue)) {
                 const boundCharacterNames = new Set(getAllBoundCharacterNames().map((n) => n.trim().toLowerCase()));
                 const spokenThisTurn = [];
+                // Only the FIRST actually-spoken segment gets timed below - that's the moment
+                // this turn's audio actually starts, the last leg of the end-to-end breakdown
+                // (RAG / LLM already timed above). Later segments in the same turn are pipelined
+                // by voice_manager.js's TTS queue, not a fresh "reply received" event.
+                let firstAudioTimed = false;
                 for (const segment of aiReply.dialogue) {
                     if (!segment || !segment.text) continue;
                     const speaker = segment.speaker || 'narrator';
@@ -422,7 +459,21 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                         continue;
                     }
 
-                    speakText(segment.text, speaker, segment.voiceDescription);
+                    if (!firstAudioTimed) {
+                        firstAudioTimed = true;
+                        speakText(segment.text, speaker, segment.voiceDescription, () => {
+                            const ttsStartLatencyMs = Date.now() - aiReplyReceivedAt;
+                            const totalMs = Date.now() - turnStart;
+                            console.log(`-> Turn latency breakdown: RAG ${ragLatencyMs}ms | LLM ${latency}ms | reply-to-audio ${ttsStartLatencyMs}ms | total ${totalMs}ms`);
+                            recordTurnLatency({
+                                ragLatencyMs, llmLatencyMs: latency, ttsStartLatencyMs, totalMs,
+                                model: activeModelName, transcriptPreview: transcript.slice(0, 80),
+                                dialogueSegments: aiReply.dialogue.length
+                            });
+                        });
+                    } else {
+                        speakText(segment.text, speaker, segment.voiceDescription);
+                    }
                     appendTranscript(segment.text, `Dungeon Master (${speaker})`, Date.now());
                     spokenThisTurn.push({ speaker, text: segment.text, voiceDescription: segment.voiceDescription });
 
@@ -717,11 +768,13 @@ async function handleSessionZeroInput(sourceLabel, transcript) {
         // Also kept as a plain file so the dashboard can display it without needing to
         // query the RAG server. narratorPersona rides along here too - runDmTurn() reads it
         // back out of this same file every turn so the DM's narrative voice stays consistent
-        // for the whole campaign instead of drifting turn to turn.
+        // for the whole campaign instead of drifting turn to turn. Capped to one sentence here
+        // (capToFirstSentence) rather than trusting the model's own "one short sentence"
+        // instruction to always hold - see the function's comment above.
         try {
             fs.writeFileSync(
                 path.join(TEMP_DATA_DIR, 'campaign_intro.json'),
-                JSON.stringify({ text: seed.introLore, narratorPersona: seed.narratorPersona || '', generatedAt: new Date().toISOString() }, null, 2),
+                JSON.stringify({ text: seed.introLore, narratorPersona: capToFirstSentence(seed.narratorPersona), generatedAt: new Date().toISOString() }, null, 2),
                 'utf8'
             );
         } catch (e) {
@@ -759,8 +812,9 @@ async function handleCharacterIntroInput(sourceLabel, transcript) {
 }
 
 // Parses the compiled character introductions, binds each Discord user to their character
-// (character_manager.js bindCharacter - the same map runDmTurn() reads via
-// getCharacterMapString()/getBoundCharacterName()), logs each character's opening description
+// (character_manager.js bindCharacter - the same map the messageCreate handler reads via
+// getBoundCharacterName() to resolve a speaker's name before it ever reaches the LLM), logs
+// each character's opening description
 // so it's remembered, then generates and announces Session 1's opening event with those
 // introductions as extra context so it can acknowledge where each character actually is.
 async function beginSessionOne(compiledIntros) {
@@ -1060,7 +1114,7 @@ client.on('messageCreate', async (message) => {
             // needs a persisted TextChannel reference to post into later, so capture it here the
             // same way currentVoiceConnection is captured for voice.
             setActiveTextChannel(message.channel);
-            joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript, startTime) => {
+            joinAndListen(client, message.guild.id, voiceChannel.id, async (userId, transcript, startTime, endTime) => {
                 let sourceLabel = userId;
                 let discordName = userId;
 
@@ -1080,7 +1134,14 @@ client.on('messageCreate', async (message) => {
                     }
                 } catch (e) { /* fallback to id */ }
 
-                console.log(`\n[Audio Transcribed] ${sourceLabel} (${discordName}): "${transcript}"`);
+                // Pure STT turnaround (speech-end -> transcript-received) - kept separate from
+                // any debounce/queueing delay applied below, since that's deliberate coalescing,
+                // not transcription cost. See CLAUDE.md Phase 6 / voice_manager.js utteranceEndTimes.
+                const sttLatencyMs = endTime ? Date.now() - endTime : null;
+                console.log(`\n[Audio Transcribed] ${sourceLabel} (${discordName}) in ${sttLatencyMs}ms: "${transcript}"`);
+                if (sttLatencyMs !== null) {
+                    recordUtteranceLatency({ sttLatencyMs, source: sourceLabel, transcriptPreview: transcript.slice(0, 80) });
+                }
 
                 recordDiscordUser(discordName);
                 appendTranscript(transcript, sourceLabel, Date.now());
