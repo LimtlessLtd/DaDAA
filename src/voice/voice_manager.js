@@ -410,4 +410,24 @@ function getTtsQueueStatus() {
     };
 }
 
-module.exports = { joinAndListen, speakText, stopSpeaking, pregenerateStaticAudio, getTtsQueueStatus };
+// Resolves once every item queued so far has actually finished playing (not merely been
+// dispatched) - i.e. ttsQueue is empty, nothing is mid-playback, and nothing is sitting prefetched
+// waiting to play next. Used by index.js's enqueueDmTurn() to hold a DM turn "in flight" for its
+// full spoken duration, not just its LLM-call duration - see the comment there for why: without
+// this, a new trigger landing while a turn is still narrating starts its OWN LLM call immediately,
+// and that turn's TTS then queues up behind the one still playing, so a burst of closely-spaced
+// triggers (repeated small utterances, or the un-debounced dice-roll trigger) piles up several
+// turns' worth of unplayed audio instead of just one.
+function waitForTtsQueueDrain(pollMs = 200) {
+    return new Promise((resolve) => {
+        (function check() {
+            if (ttsQueue.length === 0 && !isPlayingTts && !prefetched) {
+                resolve();
+            } else {
+                setTimeout(check, pollMs);
+            }
+        })();
+    });
+}
+
+module.exports = { joinAndListen, speakText, stopSpeaking, pregenerateStaticAudio, getTtsQueueStatus, waitForTtsQueueDrain };

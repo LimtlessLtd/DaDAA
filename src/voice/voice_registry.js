@@ -118,4 +118,14 @@ function resolveSpeakerVoice(speaker, voiceDescription) {
     return voiceSpec;
 }
 
-module.exports = { resolveSpeakerVoice, deriveVoiceFromDescription, NARRATOR_VOICE };
+// Read-only check for "has this speaker ever been given a voice before" - used by index.js to
+// decide whether an NPC's line is their first-ever appearance (see the speaker-attribution
+// backstop in runDmTurn's dialogue loop), without the side effect of resolveSpeakerVoice()
+// registering them as a byproduct of just checking.
+function hasVoice(speaker) {
+    if (!speaker || speaker.trim().toLowerCase() === 'narrator') return true;
+    const registry = loadRegistry();
+    return !!registry[speaker.trim()];
+}
+
+module.exports = { resolveSpeakerVoice, deriveVoiceFromDescription, hasVoice, NARRATOR_VOICE };

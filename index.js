@@ -4,7 +4,8 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
-const { joinAndListen, speakText, pregenerateStaticAudio } = require('./src/voice/voice_manager');
+const { joinAndListen, speakText, pregenerateStaticAudio, waitForTtsQueueDrain } = require('./src/voice/voice_manager');
+const { hasVoice } = require('./src/voice/voice_registry');
 const { getVoiceConnection } = require('@discordjs/voice');
 const {
     initializeWorldContext,
@@ -127,21 +128,54 @@ let pendingCampaignIntroLore = null;
 // (THINKING_FILLERS, check announcements) so silence always repeats actual narration.
 let lastSpokenTurn = [];
 
-// Tracks whether a turn is currently running anywhere in dmTurnQueue (real speech, dice-roll, or
-// silence-driver triggers all funnel through here) - queueDmTranscript below uses this to avoid
-// committing a new filler+turn on top of one that's still cooking. Set true synchronously before
-// the promise chain resumes so a burst of enqueueDmTurn calls landing back-to-back can't all read
-// it as false before the first one's runDmTurn actually starts.
+// Throttles repeat portrait posts to Discord: an NPC that speaks (or gets mentioned) several
+// times in a short span used to re-post the same image every single time, flooding the channel
+// with art the table has already seen. Keyed by entity id (falls back to a normalized name for the
+// rare case an entity object isn't available) -> last-posted timestamp. Only the image attachment
+// is withheld while on cooldown - the dialogue text/caption still posts either way, since that's
+// real narration content, not decoration. In-memory only (like lastSpokenTurn above) - a stale
+// entry surviving "Start New Campaign" can't collide with a fresh campaign's entities, which get
+// new ids, so there's nothing to reset here.
+const IMAGE_REPOST_COOLDOWN_MS = 5 * 60 * 1000;
+const lastImagePostedAt = new Map();
+
+function canPostImage(entity, fallbackName) {
+    const key = entity?.id ?? `name:${(fallbackName || '').trim().toLowerCase()}`;
+    const last = lastImagePostedAt.get(key) || 0;
+    if (Date.now() - last < IMAGE_REPOST_COOLDOWN_MS) return false;
+    lastImagePostedAt.set(key, Date.now());
+    return true;
+}
+
+// Tracks whether a turn is currently running OR still being spoken anywhere in dmTurnQueue (real
+// speech, dice-roll, or silence-driver triggers all funnel through here) - queueDmTranscript below
+// uses this to avoid committing a new filler+turn on top of one that's still cooking or still
+// talking. Set true synchronously before the promise chain resumes so a burst of enqueueDmTurn
+// calls landing back-to-back can't all read it as false before the first one's runDmTurn actually
+// starts.
 let dmTurnInFlight = false;
 
+// runDmTurn() itself resolves as soon as its dialogue/announcements are DISPATCHED to the TTS
+// queue, not once they've actually finished playing (TTS is fire-and-forget so several dialogue
+// segments can pipeline). Without waitForTtsQueueDrain() below, that meant a new trigger landing
+// while the previous turn was still mid-narration (a closely-spaced follow-up utterance, or the
+// dice-roll trigger, which isn't debounced) would start its OWN LLM call immediately, and its
+// audio would then queue up behind the one still playing - a burst of small utterances snowballed
+// into several turns' worth of backed-up TTS, each one's "reply-to-audio" latency growing with
+// every turn still ahead of it in the queue. Chaining the drain-wait onto the SAME dmTurnQueue
+// promise (rather than checking dmTurnInFlight from inside runDmTurn) means it applies no matter
+// which of runDmTurn's return points fired.
 function enqueueDmTurn(transcript) {
     dmTurnInFlight = true;
-    dmTurnQueue = dmTurnQueue.then(() => runDmTurn(transcript)).catch((err) => {
-        console.error('-> DM turn failed:', err.message);
-        return null;
-    }).finally(() => {
-        dmTurnInFlight = false;
-    });
+    dmTurnQueue = dmTurnQueue
+        .then(() => runDmTurn(transcript))
+        .then((result) => waitForTtsQueueDrain().then(() => result))
+        .catch((err) => {
+            console.error('-> DM turn failed:', err.message);
+            return null;
+        }).finally(() => {
+            dmTurnInFlight = false;
+        });
     return dmTurnQueue;
 }
 
@@ -161,9 +195,10 @@ function enqueueDmTurn(transcript) {
 // each such gap used to commit its OWN filler+turn on top of whatever was still cooking, so
 // fillers piled up and played back-to-back while real replies queued up behind them, arriving
 // late and out of sync. tryCommitPendingTranscript() below checks dmTurnInFlight and, if a turn
-// is still running, just reschedules itself (short poll, no new filler) instead of committing -
-// so everything said while the DM is "thinking" gets folded into ONE follow-up turn once it's
-// actually free, rather than each gap spawning a separate one.
+// is still running OR still being narrated (see waitForTtsQueueDrain() above), just reschedules
+// itself (short poll, no new filler) instead of committing - so everything said while the DM is
+// "thinking" or still talking gets folded into ONE follow-up turn once it's actually free, rather
+// than each gap spawning a separate one.
 const DM_TURN_DEBOUNCE_MS = 3000;
 const DM_TURN_INFLIGHT_POLL_MS = 1000;
 const THINKING_FILLERS = [
@@ -248,25 +283,33 @@ function saveLlmDebug(debugInfo) {
     }
 }
 
+// "checkSkill" is free text from the model - usually a bare skill/ability name ("Perception"),
+// but guideline 12 now also has it request saving throws ("Constitution saving throw") before
+// applying a condition. "make a Constitution saving throw check" reads as a redundant mouthful, so
+// only append "check" when the text doesn't already name itself as a save.
+function phraseCheckRequirement(skill) {
+    return /\bsav(e|ing)\b/i.test(skill) ? skill : `${skill} check`;
+}
+
 // Deterministic backstop for check announcements: the prompt asks the model to state the skill
 // and DC out loud in a dialogue segment (ai_provider.js guideline 5), but it doesn't always
 // comply, leaving players unsure what they're rolling for. This runs unconditionally whenever a
 // check is registered, so the requirement is always announced regardless of what was narrated.
 function announceCheckRequirement(character, skill, dc) {
-    const announcement = `${character}, make a ${skill} check - you need to beat a DC of ${dc}.`;
+    const announcement = `${character}, make a ${phraseCheckRequirement(skill)} - you need to beat a DC of ${dc}.`;
     speakText(announcement, 'narrator');
     appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
-    postToActiveChannel({ content: `🎲 ${announcement}` });
+    postToActiveChannel({ content: `**Check Required:** ${announcement}` });
 }
 
 // Same rationale as announceCheckRequirement above, for an open group check (ai_provider.js
 // guideline 5b) - runs unconditionally the moment one is opened. Deliberately doesn't name
 // specific characters, since unlike a solo check nobody in particular is required to respond.
 function announceOpenGroupCheckRequirement(skill, dc) {
-    const announcement = `Everyone, make a ${skill} check if you'd like to try - you need to beat a DC of ${dc}.`;
+    const announcement = `Everyone, make a ${phraseCheckRequirement(skill)} if you'd like to try - you need to beat a DC of ${dc}.`;
     speakText(announcement, 'narrator');
     appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
-    postToActiveChannel({ content: `🎲 ${announcement}` });
+    postToActiveChannel({ content: `**Check Required:** ${announcement}` });
 }
 
 // Deterministic backstop for condition/long-rest changes, same rationale as
@@ -283,20 +326,20 @@ function announceStateChanges(announcements) {
             const announcement = `${a.character} takes a long rest - HP fully restored${clearedNote}.`;
             speakText(announcement, 'narrator');
             appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
-            postToActiveChannel({ content: `💤 ${announcement}` });
+            postToActiveChannel({ content: `**Long Rest:** ${announcement}` });
             continue;
         }
         if (a.added.length > 0) {
             const announcement = `${a.character} is now ${a.added.join(', ')}.`;
             speakText(announcement, 'narrator');
             appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
-            postToActiveChannel({ content: `⚠️ ${announcement}` });
+            postToActiveChannel({ content: `**Condition Added:** ${announcement}` });
         }
         if (a.removed.length > 0) {
             const announcement = `${a.character} is no longer ${a.removed.join(', ')}.`;
             speakText(announcement, 'narrator');
             appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
-            postToActiveChannel({ content: `✅ ${announcement}` });
+            postToActiveChannel({ content: `**Condition Removed:** ${announcement}` });
         }
     }
 }
@@ -315,7 +358,7 @@ function announceStateChanges(announcements) {
 // existence would go unannounced to anyone not reading text chat. Never called for "stable" - no
 // status change, nothing to announce.
 function announceEventStatusChange(kind, event, resolutionSummary) {
-    const labels = { resolved: '📜 Event Resolved', escalated: '⚠️ Event Escalated', evolved: '🔄 Event Evolved', new: '📜 New Event' };
+    const labels = { resolved: '**Event Resolved**', escalated: '**Event Escalated**', evolved: '**Event Evolved**', new: '**New Event**' };
     const label = labels[kind];
     if (!label || !event) return;
 
@@ -401,7 +444,7 @@ async function updateCampaignBackgroundEvents() {
 const DM_TURN_FAILURE_MESSAGE = "Sorry, I'm having trouble gathering my thoughts right now - give me a moment and try again.";
 function announceDmTurnFailure() {
     speakText(DM_TURN_FAILURE_MESSAGE, 'narrator');
-    postToActiveChannel({ content: `⚠️ ${DM_TURN_FAILURE_MESSAGE}` });
+    postToActiveChannel({ content: `**DM Error:** ${DM_TURN_FAILURE_MESSAGE}` });
 }
 
 // Shared retry wrapper around generateNextEvent() - used everywhere a new active event gets
@@ -521,6 +564,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                 // (RAG / LLM already timed above). Later segments in the same turn are pipelined
                 // by voice_manager.js's TTS queue, not a fresh "reply received" event.
                 let firstAudioTimed = false;
+                let previousSegment = null;
                 for (const segment of aiReply.dialogue) {
                     if (!segment || !segment.text) continue;
                     const speaker = segment.speaker || 'narrator';
@@ -534,6 +578,32 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     if (boundCharacterNames.has(speaker.trim().toLowerCase())) {
                         console.warn(`-> Dropping DM dialogue segment: model tried to speak for player character "${speaker}".`);
                         continue;
+                    }
+
+                    // Backstop for guideline 4's speaker-attribution rule: players hear this over
+                    // voice only, with no visual speaker label, so an NPC's first-ever line needs
+                    // the narrator to say who is talking first (by name if known, else a physical
+                    // description). Local models don't always comply. hasVoice() is false only the
+                    // very first time this speaker is about to talk this campaign (see
+                    // voice_registry.js) - if the immediately preceding narrator segment didn't
+                    // already mention their name, inject a minimal, guaranteed announcement before
+                    // their line plays. The prompt guideline is still what produces the rich version
+                    // (name or description woven into the scene); this only guarantees a floor.
+                    const isNarrator = speaker.trim().toLowerCase() === 'narrator';
+                    if (!isNarrator && !hasVoice(speaker)) {
+                        const alreadyNamed = previousSegment
+                            && previousSegment.speaker === 'narrator'
+                            && previousSegment.text.toLowerCase().includes(speaker.trim().toLowerCase());
+                        if (!alreadyNamed) {
+                            const intro = `${speaker} begins to speak.`;
+                            speakText(intro, 'narrator', null);
+                            appendTranscript(intro, 'Dungeon Master (narrator)', Date.now());
+                            postToActiveChannel({ content: intro });
+                            // Included in spokenThisTurn (unlike THINKING_FILLERS) so a silence-driver
+                            // replay of this turn keeps the attribution instead of dropping straight
+                            // into the NPC's line with the same ambiguity this backstop exists to fix.
+                            spokenThisTurn.push({ speaker: 'narrator', text: intro, voiceDescription: null });
+                        }
                     }
 
                     if (!firstAudioTimed) {
@@ -554,7 +624,6 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     appendTranscript(segment.text, `Dungeon Master (${speaker})`, Date.now());
                     spokenThisTurn.push({ speaker, text: segment.text, voiceDescription: segment.voiceDescription });
 
-                    const isNarrator = speaker.trim().toLowerCase() === 'narrator';
                     let speakingEntity = isNarrator ? null : getEntityByName(speaker);
 
                     // Backstop: guideline 9 asks the model to record every new NPC via
@@ -584,11 +653,14 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                         // Fire-and-forget - posting text-only when no portrait exists yet is the
                         // expected, correct behavior, not a bug to fix. Caption includes the
                         // entity's description alongside the spoken line so the image is never
-                        // posted without the context that generated it.
-                        const caption = speakingEntity?.description ? `\n🎨 *${speakingEntity.description}*` : '';
+                        // posted without the context that generated it. showImage also checks the
+                        // repost cooldown - an NPC talking several times in a row still gets their
+                        // line posted every time, just not the same portrait over and over.
+                        const showImage = !!portrait && canPostImage(speakingEntity, speaker);
+                        const caption = showImage && speakingEntity?.description ? `\n**Image description:** *${speakingEntity.description}*` : '';
                         postToActiveChannel({
-                            content: `🗣️ **${speaker}:** ${segment.text}${caption}`,
-                            files: portrait ? [{ attachment: path.join(TEMP_DATA_DIR, portrait.path), name: 'portrait.png' }] : []
+                            content: `**${speaker}:** ${segment.text}${caption}`,
+                            files: showImage ? [{ attachment: path.join(TEMP_DATA_DIR, portrait.path), name: 'portrait.png' }] : []
                         });
                     } else {
                         // Guarantee every spoken line has a text equivalent in Discord - a narrator
@@ -615,11 +687,17 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                             enqueueEntityImage(entity, entity.category || 'npcs');
                             continue;
                         }
+                        // Same repost cooldown as the speaker case above - a passing mention isn't
+                        // reason enough for a text-only post per the comment above, and it's even
+                        // less reason to re-post art the table has already seen recently.
+                        if (!canPostImage(entity, entity.name)) continue;
                         postToActiveChannel({
-                            content: `${segment.text}${entity.description ? `\n🎨 *${entity.description}*` : ''}`,
+                            content: `${segment.text}${entity.description ? `\n**Image description:** *${entity.description}*` : ''}`,
                             files: [{ attachment: path.join(TEMP_DATA_DIR, portrait.path), name: 'portrait.png' }]
                         });
                     }
+
+                    previousSegment = { speaker: isNarrator ? 'narrator' : speaker, text: segment.text };
                 }
 
                 if (spokenThisTurn.length > 0) {
@@ -713,7 +791,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                             console.error('-> Failed to generate a next event after retrying - active event left blank.');
                             const fallback = "The dust settles for now - give me a moment to figure out what happens next.";
                             speakText(fallback, 'narrator');
-                            postToActiveChannel({ content: `⚠️ ${fallback}` });
+                            postToActiveChannel({ content: `**Notice:** ${fallback}` });
                         }
                     });
 
@@ -737,7 +815,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                         // identically-worded fields in the prompt/dashboard with no new
                         // information in either - "complication" instead keeps showing the
                         // original pushback/obstacle framing from when the event was created.
-                        console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${aiReply.resolutionSummary || currentEventData.activeEvent.complication}`);
+                        console.log(`-> Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${aiReply.resolutionSummary || currentEventData.activeEvent.complication}`);
                         announceEventStatusChange(status, currentEventData.activeEvent, aiReply.resolutionSummary);
                     }
 

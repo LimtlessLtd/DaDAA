@@ -161,7 +161,7 @@ async function handleEventImageJob(activeEvent) {
     console.log(`-> Event image (re)generated for "${activeEvent.title}"`);
 
     await postToActiveChannel({
-        content: `📜 **${activeEvent.title}**` + (sceneDescription ? `\n🎨 *${sceneDescription}*` : ''),
+        content: `**${activeEvent.title}**` + (sceneDescription ? `\n**Image description:** *${sceneDescription}*` : ''),
         files: [{ attachment: path.join(TEMP_DATA_DIR, relPath), name: 'event.png' }]
     });
 }
