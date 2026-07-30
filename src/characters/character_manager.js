@@ -4,7 +4,6 @@ const path = require('path');
 const dataDir = path.join(__dirname, '..', '..', 'temp_data');
 const charMapPath = path.join(dataDir, 'character_map.json');
 const charLogsPath = path.join(dataDir, 'character_logs.json');
-const playerLogsPath = path.join(dataDir, 'player_logs.json');
 const seenUsersPath = path.join(dataDir, 'seen_discord_users.json');
 const nicknamesPath = path.join(dataDir, 'discord_nicknames.json');
 
@@ -103,24 +102,20 @@ function bindCharacter(discordUser, characterName) {
     if (!map[discordUser].includes(characterName)) {
         map[discordUser].push(characterName);
         saveCharacterMap(map);
-        addPlayerLog(discordUser, `Started playing as character: ${characterName}`);
     }
 }
 
 function unbindCharacter(discordUser, characterName) {
     const map = loadCharacterMap();
     if (!map[discordUser]) return;
-    
+
     if (characterName) {
         map[discordUser] = map[discordUser].filter(c => c !== characterName);
-        addPlayerLog(discordUser, `Stopped playing as character: ${characterName}`);
         if (map[discordUser].length === 0) {
             delete map[discordUser];
         }
     } else {
-        const characters = map[discordUser];
         delete map[discordUser];
-        addPlayerLog(discordUser, `Stopped playing as all characters: ${characters.join(', ')}`);
     }
     saveCharacterMap(map);
 }
@@ -184,43 +179,17 @@ function addCharacterLogs(newLogs) {
     saveCharacterLogs(logs);
 }
 
-function loadPlayerLogs() {
-    ensureDataDirectories();
-    if (!fs.existsSync(playerLogsPath)) return [];
-    try {
-        return JSON.parse(fs.readFileSync(playerLogsPath, 'utf8')) || [];
-    } catch (e) {
-        console.warn('-> Could not read player logs', e.message);
-        return [];
-    }
-}
-
-function savePlayerLogs(logs) {
-    ensureDataDirectories();
-    fs.writeFileSync(playerLogsPath, JSON.stringify(logs, null, 2));
-}
-
-function addPlayerLog(discordUser, message) {
-    if (!discordUser || !message) return;
-    const logs = loadPlayerLogs();
-    
-    logs.push({
-        id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
-        discordUser: String(discordUser).trim(),
-        log: String(message).trim(),
-        timestamp: new Date().toISOString()
-    });
-    
-    savePlayerLogs(logs);
-}
-
-// discordUser is deliberately omitted here - "log" already names the character involved (e.g.
-// "Started playing as character: X"), and this string goes straight into the LLM prompt, which
-// should never need a raw Discord username (see buildPrompt() - no more character-map lookup).
-function getPlayerLogsString() {
-    const logs = loadPlayerLogs();
-    if (logs.length === 0) return 'No player logs recorded yet.';
-    return logs.slice(-15).map(l => `[${new Date(l.timestamp).toLocaleString()}] ${l.log}`).join('\n');
+// Flat roster of who's currently player-controlled, for prompt injection - this used to be a
+// timestamped "Player Logs" history of every bind/unbind event, but that log format told the
+// model nothing about NET current state: a character bound then unbound minutes later (e.g. a
+// name mentioned in passing during a character intro, mistakenly auto-bound as its own
+// character, then manually unbound once noticed) still left both lines sitting in the prompt
+// with no signal about which one still held. Reflecting only current bindings makes a corrected
+// mistake disappear from the prompt automatically instead of lingering as noise.
+function getCurrentlyPlayedCharactersString() {
+    const names = getAllBoundCharacterNames();
+    if (names.length === 0) return 'No characters currently bound to a player.';
+    return names.join(', ');
 }
 
 module.exports = {
@@ -235,7 +204,5 @@ module.exports = {
     recordDiscordUser,
     recordDiscordNickname,
     resolveUsernameByNickname,
-    loadPlayerLogs,
-    addPlayerLog,
-    getPlayerLogsString
+    getCurrentlyPlayedCharactersString
 };

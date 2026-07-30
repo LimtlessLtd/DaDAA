@@ -142,7 +142,6 @@ function startWebEditor() {
                     // 2. Wipe RAG collections
                     await callRagServer('/clear', { collection: 'dnd_knowledge' }).catch(() => {});
                     await callRagServer('/clear', { collection: 'dnd_transcripts' }).catch(() => {});
-                    await callRagServer('/clear', { collection: 'dnd_insights' }).catch(() => {});
 
                     // 3. Reset physical files on disk (the "purge" logic)
                     const filesToReset = {
@@ -156,7 +155,6 @@ function startWebEditor() {
                         'campaign_intro.json': '{"text": null, "narratorPersona": null, "generatedAt": null}',
                         'pending_checks.json': '[]',
                         'open_group_check.json': '{"active": false}',
-                        'player_logs.json': '[]',
                         'entity_images.json': '{}',
                         'background_events.json': '[]',
                         'ddb_characters.json': '{}',

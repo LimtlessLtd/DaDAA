@@ -3,7 +3,7 @@
 // encounters) have a generated image, mirroring src/voice/voice_registry.js's "generate once,
 // lock in forever" pattern for TTS voices. Keyed by a normalized entity name (not entity id)
 // since dialogue segments identify an NPC speaker by name (see ai_provider.js buildPrompt
-// guideline 5), not by entity id - using the same key for every entity type keeps lookup uniform.
+// guideline 4), not by entity id - using the same key for every entity type keeps lookup uniform.
 //
 // Deliberately does NOT import normalizeText from context_manager.js, even though it's the same
 // one-line logic - image_gen_manager.js (which requires this file) is required FROM

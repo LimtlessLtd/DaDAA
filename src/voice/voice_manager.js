@@ -186,7 +186,7 @@ audioPlayer.on('error', error => {
 });
 
 // "speaker" is "narrator" or an exact NPC/character name (see ai_provider.js buildPrompt
-// guideline 5); "voiceDescription" only matters the first time that speaker is heard - see
+// guideline 4); "voiceDescription" only matters the first time that speaker is heard - see
 // voice_registry.js resolveSpeakerVoice() for how it gets locked in from then on.
 // "onPlaybackStart" is an optional latency-instrumentation hook (see index.js runDmTurn) fired
 // the moment THIS item is handed to the audio player - not awaited, purely a timestamp callback.
@@ -391,7 +391,7 @@ async function processTtsQueue() {
 }
 
 // A single DM turn can queue several dialogue segments (narrator + an NPC line + narrator again -
-// see ai_provider.js guideline 5), so if a campaign reset happens mid-turn, whatever's still
+// see ai_provider.js guideline 4), so if a campaign reset happens mid-turn, whatever's still
 // queued would otherwise keep playing right through the reset, sounding like the DM is still
 // talking about the old campaign. Call this on "Start New Campaign"/purge to flush it.
 function stopSpeaking() {

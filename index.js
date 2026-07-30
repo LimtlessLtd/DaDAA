@@ -64,7 +64,7 @@ const {
     recordDiscordUser,
     recordDiscordNickname,
     resolveUsernameByNickname,
-    getPlayerLogsString,
+    getCurrentlyPlayedCharactersString,
     getBoundCharacterName,
     getAllBoundCharacterNames
 } = require('./src/characters/character_manager');
@@ -249,7 +249,7 @@ function saveLlmDebug(debugInfo) {
 }
 
 // Deterministic backstop for check announcements: the prompt asks the model to state the skill
-// and DC out loud in a dialogue segment (ai_provider.js guideline 6), but it doesn't always
+// and DC out loud in a dialogue segment (ai_provider.js guideline 5), but it doesn't always
 // comply, leaving players unsure what they're rolling for. This runs unconditionally whenever a
 // check is registered, so the requirement is always announced regardless of what was narrated.
 function announceCheckRequirement(character, skill, dc) {
@@ -260,7 +260,7 @@ function announceCheckRequirement(character, skill, dc) {
 }
 
 // Same rationale as announceCheckRequirement above, for an open group check (ai_provider.js
-// guideline 6b) - runs unconditionally the moment one is opened. Deliberately doesn't name
+// guideline 5b) - runs unconditionally the moment one is opened. Deliberately doesn't name
 // specific characters, since unlike a solo check nobody in particular is required to respond.
 function announceOpenGroupCheckRequirement(skill, dc) {
     const announcement = `Everyone, make a ${skill} check if you'd like to try - you need to beat a DC of ${dc}.`;
@@ -269,21 +269,66 @@ function announceOpenGroupCheckRequirement(skill, dc) {
     postToActiveChannel({ content: `🎲 ${announcement}` });
 }
 
-// Text-only (no TTS) system notice whenever the active event changes - deliberately independent
-// of enqueueEventImage()'s async image job, which can fail, be disabled (ImageGenConfig.enabled),
-// or simply not have finished yet; without this, a status change (or a brand new event after one
-// resolves) would only ever reach Discord if that image happened to succeed. The narrator's own
+// Deterministic backstop for condition/long-rest changes, same rationale as
+// announceCheckRequirement above: guideline 12 (ai_provider.js) asks the model to make a new
+// condition's in-fiction cause obvious in "dialogue", but never guarantees a plain, unambiguous
+// statement of *what actually changed* - without this, a condition could land with nothing but
+// atmospheric prose to signal it happened at all. Runs unconditionally off applyStateChanges()'s
+// return value (character_state_manager.js), not off what the narrative said.
+function announceStateChanges(announcements) {
+    if (!Array.isArray(announcements) || announcements.length === 0) return;
+    for (const a of announcements) {
+        if (a.longRest) {
+            const clearedNote = a.removed.length > 0 ? `, no longer ${a.removed.join(', ')}` : '';
+            const announcement = `${a.character} takes a long rest - HP fully restored${clearedNote}.`;
+            speakText(announcement, 'narrator');
+            appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+            postToActiveChannel({ content: `💤 ${announcement}` });
+            continue;
+        }
+        if (a.added.length > 0) {
+            const announcement = `${a.character} is now ${a.added.join(', ')}.`;
+            speakText(announcement, 'narrator');
+            appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+            postToActiveChannel({ content: `⚠️ ${announcement}` });
+        }
+        if (a.removed.length > 0) {
+            const announcement = `${a.character} is no longer ${a.removed.join(', ')}.`;
+            speakText(announcement, 'narrator');
+            appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+            postToActiveChannel({ content: `✅ ${announcement}` });
+        }
+    }
+}
+
+// System notice whenever the active event changes - deliberately independent of
+// enqueueEventImage()'s async image job, which can fail, be disabled (ImageGenConfig.enabled), or
+// simply not have finished yet; without this, a status change (or a brand new event after one
+// resolves) would only ever reach players if that image happened to succeed. The narrator's own
 // dialogue this turn already covers the SAME change in-fiction, but only for resolved/escalated/
-// evolved on the event that just changed - a freshly generated NEXT event's description was never
-// spoken aloud at all (it's produced by a separate, later LLM call), so kind: 'new' fills a real
-// gap, not just decoration. Never called for "stable" - no status change, nothing to announce.
+// evolved on the event that just changed - a freshly generated NEXT event is produced by a
+// separate, later generateNextEvent() call, so the model never had a chance to narrate it in any
+// turn's "dialogue". Text-only for resolved/escalated/evolved (the narrator already spoke about
+// this beat live, moments ago, in the same turn - see runDmTurn()'s dialogue loop, which always
+// runs before this function). kind: 'new' ALSO speaks via TTS - there is no human DM to relay a
+// Discord-only post to a table playing purely by voice, so without this a new event's very
+// existence would go unannounced to anyone not reading text chat. Never called for "stable" - no
+// status change, nothing to announce.
 function announceEventStatusChange(kind, event, resolutionSummary) {
     const labels = { resolved: '📜 Event Resolved', escalated: '⚠️ Event Escalated', evolved: '🔄 Event Evolved', new: '📜 New Event' };
     const label = labels[kind];
     if (!label || !event) return;
 
-    const detail = kind === 'new' ? event.description : (resolutionSummary || event.currentState || event.description);
+    const detail = kind === 'new'
+        ? [event.description, event.complication].filter(Boolean).join(' ')
+        : (resolutionSummary || event.currentState || event.description);
     postToActiveChannel({ content: `${label} — **${event.title}**${detail ? `: ${detail}` : ''}` });
+
+    if (kind === 'new' && detail) {
+        const announcement = `A new development unfolds. ${detail}`;
+        speakText(announcement, 'narrator');
+        appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
+    }
 }
 
 // An open group check waits out a fixed response window rather than reacting to the first roll -
@@ -347,6 +392,38 @@ async function updateCampaignBackgroundEvents() {
     }
 }
 
+// There is no human DM to fall back on if the model goes quiet - a player who just spoke has no
+// way to tell "the DM didn't hear me" from "the DM is broken" unless something says so. Mirrors
+// the fallback message generateCampaignSeed()'s failure path already speaks/posts (index.js
+// handleSessionZeroInput), just not previously extended to the regular per-turn pipeline. Doesn't
+// touch appendTranscript/session history - same reasoning as THINKING_FILLERS, this is a system
+// notice, not narrative content.
+const DM_TURN_FAILURE_MESSAGE = "Sorry, I'm having trouble gathering my thoughts right now - give me a moment and try again.";
+function announceDmTurnFailure() {
+    speakText(DM_TURN_FAILURE_MESSAGE, 'narrator');
+    postToActiveChannel({ content: `⚠️ ${DM_TURN_FAILURE_MESSAGE}` });
+}
+
+// Shared retry wrapper around generateNextEvent() - used everywhere a new active event gets
+// generated (the auto "resolved -> generate next" path below, and beginSessionOne()'s opening
+// event). Both call sites used to just log-and-give-up on failure, leaving current_event.json's
+// activeEvent permanently null with no player-facing signal and no automatic recovery - the only
+// way to notice and fix it was a human opening the dashboard's "Generate new event" button. One
+// retry catches most transient parse/provider failures; never throws, so callers don't need their
+// own try/catch on top of this.
+async function generateNextEventWithRetry(archivedEvents, rollingSummary, resolutionSummary, extraContext, tieInContext) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            const result = await generateNextEvent(archivedEvents, rollingSummary, resolutionSummary, extraContext, tieInContext);
+            if (result && result.activeEvent) return result;
+            console.warn(`-> generateNextEvent attempt ${attempt} returned no usable event.`);
+        } catch (err) {
+            console.error(`-> generateNextEvent attempt ${attempt} failed:`, err.message);
+        }
+    }
+    return null;
+}
+
 // Shared pipeline: build world context, call the LLM, and react to its reply.
 // Used for real transcribed speech, the silence driver's synthetic prompt, and
 // dice-roll resolutions - anywhere a "DM turn" needs to happen.
@@ -370,7 +447,7 @@ async function runDmTurn(transcript) {
         try {
             currentEventData = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
             if (currentEventData.activeEvent) {
-                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}\nCurrent State (most recent - overrides Description above wherever they conflict): ${currentEventData.activeEvent.currentState || 'No changes yet - Description above is still accurate.'}`;
+                currentEventString = `Active Event: ${currentEventData.activeEvent.title}\nDescription: ${currentEventData.activeEvent.description}\nStakes: ${currentEventData.activeEvent.stakes || 'Unknown'}\nComplication: ${currentEventData.activeEvent.complication || 'None'}\nCurrent State (most recent development - overrides Description AND Complication above wherever they conflict): ${currentEventData.activeEvent.currentState || 'No changes yet - Description above is still accurate.'}`;
             }
         } catch (e) {}
     }
@@ -393,9 +470,9 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
     `.trim();
 
     const rollingSummary = getRollingSummary();
-    const playerLogsStr = getPlayerLogsString();
+    const currentlyPlayedStr = getCurrentlyPlayedCharactersString();
     const characterStateStr = getCharacterStateString();
-    const prompt = buildPrompt(transcript, contextString, rollingSummary, currentEventString, playerLogsStr, narratorPersona, characterStateStr);
+    const prompt = buildPrompt(transcript, contextString, rollingSummary, currentEventString, currentlyPlayedStr, narratorPersona, characterStateStr);
 
     const activeModelName = config.OllamaConfig?.enabled
         ? config.OllamaConfig?.model || 'neural-chat'
@@ -450,7 +527,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
 
                     // Hard backstop: the DM narrates and voices NPCs, never a player character -
                     // players alone decide what their characters say and do (see prompt guideline
-                    // 5). Local models don't always comply, so drop any segment attributed to a
+                    // 4). Local models don't always comply, so drop any segment attributed to a
                     // bound character's name entirely rather than speak/post it as if the player
                     // said it - persisting fabricated player speech into the transcript would also
                     // poison later turns' memory of what the player actually said.
@@ -480,7 +557,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     const isNarrator = speaker.trim().toLowerCase() === 'narrator';
                     let speakingEntity = isNarrator ? null : getEntityByName(speaker);
 
-                    // Backstop: guideline 10 asks the model to record every new NPC via
+                    // Backstop: guideline 9 asks the model to record every new NPC via
                     // "worldEntities", but it doesn't always comply - without this, an NPC who
                     // never got recorded that way could talk all campaign and never become
                     // eligible for an image (enqueueEntityImage below needs an entity record to
@@ -565,7 +642,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
             }
 
             if (aiReply.characterStateChanges && Array.isArray(aiReply.characterStateChanges) && aiReply.characterStateChanges.length > 0) {
-                applyStateChanges(aiReply.characterStateChanges);
+                announceStateChanges(applyStateChanges(aiReply.characterStateChanges));
             }
 
             if (aiReply.isGroupCheck && aiReply.checkSkill && aiReply.checkDc) {
@@ -607,31 +684,38 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
                     announceEventStatusChange('resolved', resolvedEventForImage, aiReply.resolutionSummary);
 
-                    generateNextEvent(
+                    generateNextEventWithRetry(
                         currentEventData.archivedEvents,
                         rollingSummary,
                         aiReply.resolutionSummary,
                         '',
                         buildEventTieInContext(getActiveBackgroundEvents(), relevantRecords)
-                    )
-                        .then(newEventObj => {
-                            if (epochAtStart !== getCampaignEpoch()) {
-                                console.log('-> Discarding generated next-event: campaign was reset while it was in flight.');
-                                return;
-                            }
-                            if (newEventObj && newEventObj.activeEvent) {
-                                currentEventData.activeEvent = newEventObj.activeEvent;
-                                fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
-                                announceEventStatusChange('new', newEventObj.activeEvent, null);
+                    ).then(newEventObj => {
+                        if (epochAtStart !== getCampaignEpoch()) {
+                            console.log('-> Discarding generated next-event: campaign was reset while it was in flight.');
+                            return;
+                        }
+                        if (newEventObj && newEventObj.activeEvent) {
+                            currentEventData.activeEvent = newEventObj.activeEvent;
+                            fs.writeFileSync(eventPath, JSON.stringify(currentEventData, null, 2), 'utf8');
+                            announceEventStatusChange('new', newEventObj.activeEvent, null);
 
-                                if (newEventObj.linkedBackgroundEventId) {
-                                    resolveBackgroundEventAsSurfaced(
-                                        newEventObj.linkedBackgroundEventId,
-                                        `Surfaced as the new current event: ${newEventObj.activeEvent.title}`
-                                    );
-                                }
+                            if (newEventObj.linkedBackgroundEventId) {
+                                resolveBackgroundEventAsSurfaced(
+                                    newEventObj.linkedBackgroundEventId,
+                                    `Surfaced as the new current event: ${newEventObj.activeEvent.title}`
+                                );
                             }
-                        }).catch(err => console.error('-> Failed to generate new event:', err));
+                        } else {
+                            // Both attempts failed - activeEvent is left null with nothing to
+                            // resolve later either, so without a player-facing notice the table
+                            // would just find things quietly go nowhere with no explanation.
+                            console.error('-> Failed to generate a next event after retrying - active event left blank.');
+                            const fallback = "The dust settles for now - give me a moment to figure out what happens next.";
+                            speakText(fallback, 'narrator');
+                            postToActiveChannel({ content: `⚠️ ${fallback}` });
+                        }
+                    });
 
                     enqueueEventImage(resolvedEventForImage);
 
@@ -646,8 +730,14 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
                     }
 
                     if (status === 'escalated' || status === 'evolved') {
-                        currentEventData.activeEvent.complication = aiReply.resolutionSummary || currentEventData.activeEvent.complication;
-                        console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${currentEventData.activeEvent.complication}`);
+                        // Deliberately NOT copying resolutionSummary into "complication" too (a
+                        // prior version did) - currentState above already holds that exact text,
+                        // and guideline 10 makes currentState the authoritative, most-recent read
+                        // on the scene. Duplicating it into complication as well just produced two
+                        // identically-worded fields in the prompt/dashboard with no new
+                        // information in either - "complication" instead keeps showing the
+                        // original pushback/obstacle framing from when the event was created.
+                        console.log(`⚠️ Event Shifted (${status}): ${currentEventData.activeEvent.title} New Twist: ${aiReply.resolutionSummary || currentEventData.activeEvent.complication}`);
                         announceEventStatusChange(status, currentEventData.activeEvent, aiReply.resolutionSummary);
                     }
 
@@ -674,6 +764,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
             });
         } else {
             console.warn(`-> DM turn produced no reply after ${latency}ms (provider misconfigured or returned nothing usable).`);
+            announceDmTurnFailure();
             saveLlmDebug({
                 timestamp: new Date().toISOString(),
                 model: activeModelName,
@@ -696,6 +787,7 @@ Records: ${relevantRecords.map((record) => `${record.category}${record.secret ? 
     } catch (error) {
         const latency = Date.now() - apiStartTime;
         console.warn('-> AI provider unavailable:', error.message);
+        announceDmTurnFailure();
         saveLlmDebug({
             timestamp: new Date().toISOString(),
             model: "API Error",
@@ -866,6 +958,9 @@ async function beginSessionOne(compiledIntros) {
 
     if (!openingContext) {
         console.warn('-> No character introductions were parsed - proceeding to the opening event without them.');
+        const fallback = "I didn't quite catch everyone's introductions there - I'll pick up who's who as we go, so introduce yourselves again in character whenever you get the chance.";
+        speakText(fallback, 'narrator');
+        postToActiveChannel({ content: fallback });
     }
 
     try {
@@ -875,7 +970,7 @@ async function beginSessionOne(compiledIntros) {
         // with it surfaces whatever's semantically relevant, the same way every later turn's
         // tie-in context works off a real transcript.
         const openingRecords = await findRelevantRecords(openingContext);
-        const eventObj = await generateNextEvent(
+        const eventObj = await generateNextEventWithRetry(
             [],
             pendingCampaignIntroLore || 'A new campaign has just begun.',
             'The players have just finished Session Zero and introduced their characters, and are ready to begin their first scene.',
@@ -904,6 +999,15 @@ async function beginSessionOne(compiledIntros) {
             speakText(announcement, 'narrator');
             appendTranscript(announcement, 'Dungeon Master (narrator)', Date.now());
             postToActiveChannel({ content: announcement });
+        } else {
+            // Both attempts failed - without this, Session One would silently begin with no
+            // active event and no explanation, and (since nothing is ever active to resolve) no
+            // automatic path to ever generate one later either.
+            console.error('-> Failed to generate an opening event after retrying.');
+            const fallback = "Session One begins - I'm still picturing the opening scene, so let's dive in and I'll set the stage as we go.";
+            speakText(fallback, 'narrator');
+            appendTranscript(fallback, 'Dungeon Master (narrator)', Date.now());
+            postToActiveChannel({ content: fallback });
         }
     } catch (err) {
         console.warn('-> Failed to generate opening event:', err.message);
@@ -1008,7 +1112,7 @@ async function handleDiceMaidenRoll(message) {
     }
 
     // No solo check pending for this character - are they voluntarily answering an open group
-    // check (ai_provider.js guideline 6b)? Unlike a solo check, nobody specific is required to
+    // check (ai_provider.js guideline 5b)? Unlike a solo check, nobody specific is required to
     // roll for one of these: record this roll into the shared scoreboard and let it sit there -
     // the DM only reacts once the response window closes (scheduleOpenGroupCheckTimeout in
     // resolveOpenGroupCheck), not per individual roll, since a later roll can still flip an

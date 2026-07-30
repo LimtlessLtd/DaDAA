@@ -2,7 +2,6 @@
 const fs = require('fs');
 const path = require('path');
 const { callModel } = require('./ai_provider');
-const { callRagServer } = require('./context_manager');
 
 const memoryPath = path.join(__dirname, '..', '..', 'temp_data', 'ai_memory.json');
 
@@ -123,15 +122,6 @@ function rememberAiInsight(aiResponse, transcriptChunk) {
     });
     memory.summaries = memory.summaries.slice(-30);
     saveMemory(memory);
-
-    if (callRagServer) {
-        callRagServer('/add', {
-            collection: 'dnd_insights',
-            documents: [parsedSuggestion],
-            metadatas: [{ timestamp, transcript: transcriptChunk || '' }],
-            ids: [`insight_${Date.now()}_${Math.floor(Math.random() * 1000)}`]
-        }).catch(() => {});
-    }
 
     return memory;
 }

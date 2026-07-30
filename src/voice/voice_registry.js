@@ -1,5 +1,5 @@
 // src/voice/voice_registry.js
-// Turns the LLM's free-text "voiceDescription" (see ai_provider.js buildPrompt guideline 5, e.g.
+// Turns the LLM's free-text "voiceDescription" (see ai_provider.js buildPrompt guideline 4, e.g.
 // "gruff old male dwarf, deep and gravelly") into a concrete Kokoro voice, and remembers it per
 // speaker name so the same character sounds the same for the rest of the campaign. This is an
 // approximation, not a literal generative match - Kokoro's entire British English catalog is 8

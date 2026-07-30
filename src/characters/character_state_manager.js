@@ -69,37 +69,80 @@ function clampHp(value, maxHp) {
     return Math.max(0, Math.min(maxHp, value));
 }
 
+// The only condition names applyStateChanges() will accept into "conditions" - the standard D&D
+// 5e status conditions, lowercased. Guideline 12 (ai_provider.js) already asks the model to stick
+// to these, but local models invent flavorful-sounding fakes anyway (e.g. "identity-erased",
+// "mechanical-pained") that have no defined mechanical meaning and nothing (a long rest, a saving
+// throw) ever clears - same "don't trust the narrative alone" reasoning as every other backstop in
+// this codebase. A condition the model wants to convey outside this list belongs in "dialogue"
+// narration, not here.
+const VALID_CONDITIONS = new Set([
+    'blinded', 'charmed', 'deafened', 'exhausted', 'frightened', 'grappled',
+    'incapacitated', 'invisible', 'paralyzed', 'petrified', 'poisoned', 'prone',
+    'restrained', 'stunned', 'unconscious'
+]);
+
 // Deterministic backstop consuming the LLM's own characterStateChanges field (ai_provider.js) -
 // same philosophy as check_manager.js/announceCheckRequirement: don't trust the narrative alone to
 // keep state consistent. Each change is { character, hpDelta, newConditions, removedConditions,
-// inventoryAdd, inventoryRemove }. Silently no-ops for a character with no tracked state (e.g. an
-// NPC misnamed by the model) rather than creating a bogus row.
+// longRest, inventoryAdd, inventoryRemove }. Silently no-ops for a character with no tracked state
+// (e.g. an NPC misnamed by the model) rather than creating a bogus row. Returns a per-character
+// summary of what actually changed (conditions added/removed, long rest taken) so the caller
+// (index.js) can announce it out loud/in Discord regardless of whether the narrative mentioned it -
+// mirrors announceCheckRequirement's rationale that the prompt guideline alone isn't a guarantee.
 function applyStateChanges(changes) {
-    if (!Array.isArray(changes) || changes.length === 0) return;
+    if (!Array.isArray(changes) || changes.length === 0) return [];
     const state = loadCharacterState();
     let changed = false;
+    const announcements = [];
 
     for (const change of changes) {
         const name = String(change?.character || '').trim();
         const entry = name && state[name];
         if (!entry) continue;
 
-        if (typeof change.hpDelta === 'number' && change.hpDelta !== 0) {
-            entry.currentHp = clampHp(entry.currentHp + change.hpDelta, entry.maxHp);
-        }
+        const added = [];
+        const removed = [];
+        const isLongRest = change.longRest === true;
 
-        if (Array.isArray(change.removedConditions) && change.removedConditions.length > 0) {
-            const removeSet = new Set(change.removedConditions.map((c) => String(c).toLowerCase().trim()));
-            entry.conditions = (entry.conditions || []).filter((c) => !removeSet.has(String(c).toLowerCase().trim()));
-        }
-        if (Array.isArray(change.newConditions) && change.newConditions.length > 0) {
-            entry.conditions = entry.conditions || [];
-            for (const condition of change.newConditions) {
-                const clean = String(condition || '').trim();
-                if (clean && !entry.conditions.some((c) => c.toLowerCase() === clean.toLowerCase())) {
-                    entry.conditions.push(clean);
+        if (isLongRest) {
+            // A long rest is currently the only way to clear conditions (see guideline 12) -
+            // full HP restore and a clean slate, deterministically, rather than trusting the
+            // model to compute the HP delta needed to reach max itself.
+            entry.currentHp = entry.maxHp;
+            if (entry.conditions && entry.conditions.length > 0) removed.push(...entry.conditions);
+            entry.conditions = [];
+        } else {
+            if (typeof change.hpDelta === 'number' && change.hpDelta !== 0) {
+                entry.currentHp = clampHp(entry.currentHp + change.hpDelta, entry.maxHp);
+            }
+
+            if (Array.isArray(change.removedConditions) && change.removedConditions.length > 0) {
+                const removeSet = new Set(change.removedConditions.map((c) => String(c).toLowerCase().trim()));
+                const before = entry.conditions || [];
+                entry.conditions = before.filter((c) => !removeSet.has(String(c).toLowerCase().trim()));
+                removed.push(...before.filter((c) => removeSet.has(String(c).toLowerCase().trim())));
+            }
+            if (Array.isArray(change.newConditions) && change.newConditions.length > 0) {
+                entry.conditions = entry.conditions || [];
+                for (const condition of change.newConditions) {
+                    const clean = String(condition || '').trim();
+                    const key = clean.toLowerCase();
+                    if (!clean) continue;
+                    if (!VALID_CONDITIONS.has(key)) {
+                        console.warn(`-> Dropping non-standard condition "${clean}" for ${name} - not a recognized D&D 5e condition.`);
+                        continue;
+                    }
+                    if (!entry.conditions.some((c) => c.toLowerCase() === key)) {
+                        entry.conditions.push(key);
+                        added.push(key);
+                    }
                 }
             }
+        }
+
+        if (isLongRest || added.length > 0 || removed.length > 0) {
+            announcements.push({ character: name, longRest: isLongRest, added, removed });
         }
 
         if (Array.isArray(change.inventoryRemove) && change.inventoryRemove.length > 0) {
@@ -133,17 +176,22 @@ function applyStateChanges(changes) {
     }
 
     if (changed) saveCharacterState(state);
+    return announcements;
+}
+
+function capitalize(word) {
+    return word.length > 0 ? word[0].toUpperCase() + word.slice(1) : word;
 }
 
 // Formats every tracked character's current status for prompt injection - same convention as
-// character_manager.js's getPlayerLogsString().
+// character_manager.js's getCurrentlyPlayedCharactersString().
 function getCharacterStateString() {
     const state = loadCharacterState();
     const entries = Object.entries(state);
     if (entries.length === 0) return 'No characters with tracked mechanical state yet.';
 
     return entries.map(([name, s]) => {
-        const conditionsText = (s.conditions && s.conditions.length > 0) ? s.conditions.join(', ') : 'none';
+        const conditionsText = (s.conditions && s.conditions.length > 0) ? s.conditions.map(capitalize).join(', ') : 'none';
         const inventoryText = (s.inventory && s.inventory.length > 0)
             ? s.inventory.map((i) => `${i.name}${i.quantity > 1 ? ` x${i.quantity}` : ''}`).join(', ')
             : 'nothing notable';
